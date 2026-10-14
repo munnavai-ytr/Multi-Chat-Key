@@ -21,6 +21,9 @@ interface ChatState {
   stop: () => void;
   renameChat: (id: string, title: string) => Promise<void>;
   togglePin: (id: string) => Promise<void>;
+  editAndResend: (userMsgId: string, newText: string) => Promise<void>;
+  regenerate: () => Promise<void>;
+  branchFrom: (msgId: string) => Promise<void>;
 }
 
 let activeAbortController: AbortController | null = null;
@@ -371,6 +374,58 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       chats: state.chats.map((c) => (c.id === id ? { ...c, pinned: nextPinned } : c)),
     }));
+  },
+
+  editAndResend: async (userMsgId, newText) => {
+    const { streaming, activeChatId, messages } = get();
+    if (streaming || !activeChatId || !newText.trim()) return;
+    const idx = messages.findIndex((m) => m.id === userMsgId);
+    if (idx < 0) return;
+    await db.messages.bulkDelete(messages.slice(idx + 1).map((m) => m.id));
+    await db.messages.update(userMsgId, { content: newText.trim() });
+    set((s) => ({
+      messages: [
+        ...s.messages.slice(0, idx),
+        { ...s.messages[idx], content: newText.trim() },
+      ],
+    }));
+    await runGeneration(activeChatId);
+  },
+
+  regenerate: async () => {
+    const { streaming, activeChatId, messages } = get();
+    const last = messages[messages.length - 1];
+    if (streaming || !activeChatId || last?.role !== 'assistant') return;
+    await db.messages.delete(last.id);
+    set((s) => ({ messages: s.messages.slice(0, -1) }));
+    await runGeneration(activeChatId);
+  },
+
+  branchFrom: async (msgId) => {
+    const { activeChatId, messages, chats } = get();
+    const idx = messages.findIndex((m) => m.id === msgId);
+    const src = chats.find((c) => c.id === activeChatId);
+    if (idx < 0 || !src) return;
+    const newId = crypto.randomUUID();
+    const now = Date.now();
+    const copy = messages.slice(0, idx + 1).map((m, i) => ({
+      ...m,
+      id: crypto.randomUUID(),
+      chatId: newId,
+      createdAt: now + i,
+    }));
+    const row = {
+      ...src,
+      id: newId,
+      title: 'Branch: ' + src.title,
+      createdAt: now,
+      updatedAt: now,
+      pinned: false,
+    };
+    await db.chats.put(row);
+    await db.messages.bulkPut(copy);
+    set((s) => ({ chats: [row, ...s.chats] }));
+    await get().selectChat(newId);
   },
 
   sendMessage: async (text: string) => {

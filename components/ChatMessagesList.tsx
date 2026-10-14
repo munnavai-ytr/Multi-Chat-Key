@@ -7,7 +7,15 @@ import { EmptyState } from './EmptyState';
 import { ChevronDown } from 'lucide-react';
 
 export function ChatMessagesList() {
-  const { messages, streaming, streamingMsgId, retryMessage } = useChatStore();
+  const {
+    messages,
+    streaming,
+    streamingMsgId,
+    retryMessage,
+    editAndResend,
+    regenerate,
+    branchFrom,
+  } = useChatStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -56,6 +64,10 @@ export function ChatMessagesList() {
     );
   }
 
+  const lastAssistantMsgId = [...messages]
+    .reverse()
+    .find((m) => m.role === 'assistant')?.id;
+
   return (
     <div className="flex-1 overflow-hidden relative flex flex-col">
       <div
@@ -68,7 +80,11 @@ export function ChatMessagesList() {
             key={msg.id}
             message={msg}
             isStreaming={streaming && streamingMsgId === msg.id}
+            isLastAssistant={msg.id === lastAssistantMsgId}
             onRetry={retryMessage}
+            onEditAndResend={editAndResend}
+            onRegenerate={regenerate}
+            onBranch={branchFrom}
           />
         ))}
       </div>

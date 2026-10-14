@@ -1,5 +1,7 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 @config "../tailwind.config.ts";
+@import "highlight.js/styles/github.css";
 
 :root{--bg:#FAFAF8;--surface:#FFFFFF;--surface-2:#F1F0EC;--text:#1B1B1F;--muted:#6B6B76;--border:#E4E3DE;--accent:#7C5CFF;--accent-fg:#FFFFFF;--radius:14px}
 .dark{--bg:#151518;--surface:#1D1D21;--surface-2:#26262B;--text:#EDEDF0;--muted:#9A9AA6;--border:#2E2E35;--accent:#8E75FF;--accent-fg:#FFFFFF}
@@ -16,4 +18,83 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-inter),Inter,
   --color-border: var(--border);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
+}
+
+/* GitHub Dark theme scoped for .dark */
+.dark .hljs {
+  color: #c9d1d9;
+  background: #161b22;
+}
+.dark .hljs-doctag,
+.dark .hljs-keyword,
+.dark .hljs-meta .hljs-keyword,
+.dark .hljs-template-tag,
+.dark .hljs-template-variable,
+.dark .hljs-type,
+.dark .hljs-variable.language_ {
+  color: #ff7b72;
+}
+.dark .hljs-title,
+.dark .hljs-title.class_,
+.dark .hljs-title.class_.inherited__,
+.dark .hljs-title.function_ {
+  color: #d2a8ff;
+}
+.dark .hljs-attr,
+.dark .hljs-attribute,
+.dark .hljs-literal,
+.dark .hljs-meta,
+.dark .hljs-number,
+.dark .hljs-operator,
+.dark .hljs-variable,
+.dark .hljs-selector-attr,
+.dark .hljs-selector-class,
+.dark .hljs-selector-id {
+  color: #79c0ff;
+}
+.dark .hljs-regexp,
+.dark .hljs-string,
+.dark .hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+.dark .hljs-built_in,
+.dark .hljs-symbol {
+  color: #ffa657;
+}
+.dark .hljs-comment,
+.dark .hljs-code,
+.dark .hljs-formula {
+  color: #8b949e;
+}
+.dark .hljs-name,
+.dark .hljs-quote,
+.dark .hljs-selector-tag,
+.dark .hljs-selector-pseudo {
+  color: #7ee787;
+}
+.dark .hljs-subst {
+  color: #c9d1d9;
+}
+.dark .hljs-section {
+  color: #79c0ff;
+  font-weight: bold;
+}
+.dark .hljs-bullet {
+  color: #f2cc60;
+}
+.dark .hljs-emphasis {
+  color: #c9d1d9;
+  font-style: italic;
+}
+.dark .hljs-strong {
+  color: #c9d1d9;
+  font-weight: bold;
+}
+.dark .hljs-addition {
+  color: #7ee787;
+  background-color: #033a16;
+}
+.dark .hljs-deletion {
+  color: #ffa198;
+  background-color: #490202;
 }
