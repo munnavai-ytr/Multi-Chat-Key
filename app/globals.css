@@ -1,0 +1,19 @@
+@import "tailwindcss";
+@config "../tailwind.config.ts";
+
+:root{--bg:#FAFAF8;--surface:#FFFFFF;--surface-2:#F1F0EC;--text:#1B1B1F;--muted:#6B6B76;--border:#E4E3DE;--accent:#7C5CFF;--accent-fg:#FFFFFF;--radius:14px}
+.dark{--bg:#151518;--surface:#1D1D21;--surface-2:#26262B;--text:#EDEDF0;--muted:#9A9AA6;--border:#2E2E35;--accent:#8E75FF;--accent-fg:#FFFFFF}
+body{background:var(--bg);color:var(--text);font-family:var(--font-inter),Inter,system-ui,sans-serif;font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased}
+* {-webkit-tap-highlight-color:transparent}
+
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface2: var(--surface-2);
+  --color-surface-2: var(--surface-2);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+}
