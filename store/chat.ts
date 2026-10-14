@@ -1,14 +1,16 @@
 import { create } from 'zustand';
-import { db, ChatRow, MsgRow } from '@/lib/db';
+import { db, ChatRow, MsgRow, FileRow } from '@/lib/db';
 import { useKeysStore } from '@/store/keys';
 import { decryptKey } from '@/lib/crypto';
-import { streamChat, Msg } from '@/lib/stream';
+import { streamChat, Msg, Part } from '@/lib/stream';
 import { ProviderId, proxyFetch } from '@/lib/providers';
+import { ProcessedFile } from '@/lib/files';
 
 interface ChatState {
   chats: ChatRow[];
   activeChatId: string | null;
   messages: MsgRow[];
+  filesByMsgId: Record<string, FileRow[]>;
   streaming: boolean;
   streamingMsgId: string | null;
   abortController: AbortController | null;
@@ -16,7 +18,7 @@ interface ChatState {
   selectChat: (chatId: string) => Promise<void>;
   newChat: () => void;
   deleteChat: (chatId: string) => Promise<void>;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, attachedFiles?: ProcessedFile[]) => Promise<void>;
   retryMessage: (assistantMsgId: string) => Promise<void>;
   stop: () => void;
   renameChat: (id: string, title: string) => Promise<void>;
@@ -36,11 +38,10 @@ async function maybeAutoTitle(chatId: string, userText: string, assistantText: s
     const chat = await db.chats.get(chatId);
     if (!chat) return;
 
-    // Check if only 1 user message & 1 assistant reply exists (new chat first reply)
+    // Check if only 1 user message & 1 assistant reply exists
     const msgCount = await db.messages.where('chatId').equals(chatId).count();
     if (msgCount !== 2) return;
 
-    // Check if the title is still the truncated first message
     const initialExpectedTitle =
       userText.length > 40 ? userText.slice(0, 40).trim() + '...' : userText.trim();
     if (chat.title !== initialExpectedTitle && chat.title !== userText.trim()) {
@@ -54,7 +55,7 @@ async function maybeAutoTitle(chatId: string, userText: string, assistantText: s
 
     const plainApiKey = await decryptKey({ iv: keyRow.iv, ct: keyRow.ct });
 
-    const promptText = `User: "${userText.slice(0, 300)}"\nAssistant: "${assistantText.slice(0, 300)}"\n\nGive a 3-6 word title for this chat. Reply with only the title.`;
+    const promptText = `User: "${(userText || 'File attachments').slice(0, 300)}"\nAssistant: "${assistantText.slice(0, 300)}"\n\nGive a 3-6 word title for this chat. Reply with only the title.`;
 
     const provider = keyRow.provider as ProviderId;
     let path = '';
@@ -160,16 +161,29 @@ async function runGeneration(chatId: string) {
   try {
     const plainApiKey = await decryptKey({ iv: keyRow.iv, ct: keyRow.ct });
 
-    // Skip broken messages when building history
-    const history = useChatStore
-      .getState()
-      .messages.filter(
-        (m) => m.id !== assistantMsgId && (m.role === 'user' || (m.content.trim() && !m.error))
-      );
-    const streamMessages: Msg[] = history.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    const state = useChatStore.getState();
+    const history = state.messages.filter(
+      (m) => m.id !== assistantMsgId && (m.role === 'user' || (m.content.trim() && !m.error))
+    );
+
+    const streamMessages: Msg[] = history.map((m) => {
+      const files = state.filesByMsgId[m.id] || [];
+      const parts: Part[] = files.map((f) => {
+        if (f.kind === 'image') {
+          return { kind: 'image', mime: f.mime, b64: f.b64 || '' };
+        }
+        if (f.kind === 'pdf') {
+          return { kind: 'pdf', name: f.name, b64: f.b64 || '' };
+        }
+        return { kind: 'text', name: f.name, text: f.text || '' };
+      });
+
+      return {
+        role: m.role,
+        content: m.content,
+        parts: parts.length > 0 ? parts : undefined,
+      };
+    });
 
     const stream = streamChat({
       provider: keyRow.provider as ProviderId,
@@ -272,6 +286,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
   activeChatId: null,
   messages: [],
+  filesByMsgId: {},
   streaming: false,
   streamingMsgId: null,
   abortController: null,
@@ -287,14 +302,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       let msgs: MsgRow[] = [];
+      const fileMap: Record<string, FileRow[]> = {};
       if (activeId) {
         msgs = await db.messages.where('chatId').equals(activeId).sortBy('createdAt');
+        const files = await db.files.where('chatId').equals(activeId).toArray();
+        for (const f of files) {
+          if (!fileMap[f.msgId]) fileMap[f.msgId] = [];
+          fileMap[f.msgId].push(f);
+        }
       }
 
       set({
         chats: allChats,
         activeChatId: activeId,
         messages: msgs,
+        filesByMsgId: fileMap,
       });
     } catch {
       // fallback
@@ -307,9 +329,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     await db.meta.put({ key: 'activeChatId', value: chatId });
     const msgs = await db.messages.where('chatId').equals(chatId).sortBy('createdAt');
+    const files = await db.files.where('chatId').equals(chatId).toArray();
+    const fileMap: Record<string, FileRow[]> = {};
+    for (const f of files) {
+      if (!fileMap[f.msgId]) fileMap[f.msgId] = [];
+      fileMap[f.msgId].push(f);
+    }
+
     set({
       activeChatId: chatId,
       messages: msgs,
+      filesByMsgId: fileMap,
       streaming: false,
       streamingMsgId: null,
     });
@@ -323,6 +353,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       activeChatId: null,
       messages: [],
+      filesByMsgId: {},
       streaming: false,
       streamingMsgId: null,
     });
@@ -334,26 +365,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     await db.chats.delete(chatId);
     await db.messages.where('chatId').equals(chatId).delete();
+    await db.files.where('chatId').equals(chatId).delete();
 
     const remainingChats = get().chats.filter((c) => c.id !== chatId);
     let nextActiveId = get().activeChatId;
     let nextMessages = get().messages;
+    let nextFilesByMsgId: Record<string, FileRow[]> = {};
 
     if (nextActiveId === chatId) {
       nextActiveId = remainingChats.length > 0 ? remainingChats[0].id : null;
       if (nextActiveId) {
         await db.meta.put({ key: 'activeChatId', value: nextActiveId });
         nextMessages = await db.messages.where('chatId').equals(nextActiveId).sortBy('createdAt');
+        const files = await db.files.where('chatId').equals(nextActiveId).toArray();
+        for (const f of files) {
+          if (!nextFilesByMsgId[f.msgId]) nextFilesByMsgId[f.msgId] = [];
+          nextFilesByMsgId[f.msgId].push(f);
+        }
       } else {
         await db.meta.delete('activeChatId');
         nextMessages = [];
+        nextFilesByMsgId = {};
       }
+    } else {
+      nextFilesByMsgId = { ...get().filesByMsgId };
     }
 
     set({
       chats: remainingChats,
       activeChatId: nextActiveId,
       messages: nextMessages,
+      filesByMsgId: nextFilesByMsgId,
     });
   },
 
@@ -377,44 +419,79 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   editAndResend: async (userMsgId, newText) => {
-    const { streaming, activeChatId, messages } = get();
+    const { streaming, activeChatId, messages, filesByMsgId } = get();
     if (streaming || !activeChatId || !newText.trim()) return;
     const idx = messages.findIndex((m) => m.id === userMsgId);
     if (idx < 0) return;
-    await db.messages.bulkDelete(messages.slice(idx + 1).map((m) => m.id));
+
+    const toDeleteIds = messages.slice(idx + 1).map((m) => m.id);
+    await db.messages.bulkDelete(toDeleteIds);
+    if (toDeleteIds.length > 0) {
+      await db.files.where('msgId').anyOf(toDeleteIds).delete();
+    }
     await db.messages.update(userMsgId, { content: newText.trim() });
+
+    const updatedFilesMap = { ...filesByMsgId };
+    for (const dId of toDeleteIds) {
+      delete updatedFilesMap[dId];
+    }
+
     set((s) => ({
       messages: [
         ...s.messages.slice(0, idx),
         { ...s.messages[idx], content: newText.trim() },
       ],
+      filesByMsgId: updatedFilesMap,
     }));
     await runGeneration(activeChatId);
   },
 
   regenerate: async () => {
-    const { streaming, activeChatId, messages } = get();
+    const { streaming, activeChatId, messages, filesByMsgId } = get();
     const last = messages[messages.length - 1];
     if (streaming || !activeChatId || last?.role !== 'assistant') return;
     await db.messages.delete(last.id);
-    set((s) => ({ messages: s.messages.slice(0, -1) }));
+    await db.files.where('msgId').equals(last.id).delete();
+    const updatedFilesMap = { ...filesByMsgId };
+    delete updatedFilesMap[last.id];
+
+    set((s) => ({
+      messages: s.messages.slice(0, -1),
+      filesByMsgId: updatedFilesMap,
+    }));
     await runGeneration(activeChatId);
   },
 
   branchFrom: async (msgId) => {
-    const { activeChatId, messages, chats } = get();
+    const { activeChatId, messages, chats, filesByMsgId } = get();
     const idx = messages.findIndex((m) => m.id === msgId);
     const src = chats.find((c) => c.id === activeChatId);
     if (idx < 0 || !src) return;
     const newId = crypto.randomUUID();
     const now = Date.now();
+
     const copy = messages.slice(0, idx + 1).map((m, i) => ({
       ...m,
       id: crypto.randomUUID(),
+      oldId: m.id,
       chatId: newId,
       createdAt: now + i,
     }));
-    const row = {
+
+    const newFiles: FileRow[] = [];
+    for (const m of copy) {
+      const oldFiles = filesByMsgId[m.oldId] || [];
+      for (const f of oldFiles) {
+        newFiles.push({
+          ...f,
+          id: crypto.randomUUID(),
+          chatId: newId,
+          msgId: m.id,
+        });
+      }
+    }
+
+    const row: ChatRow = {
       ...src,
       id: newId,
       title: 'Branch: ' + src.title,
@@ -422,15 +499,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       updatedAt: now,
       pinned: false,
     };
+
     await db.chats.put(row);
-    await db.messages.bulkPut(copy);
+    await db.messages.bulkPut(copy.map(({ oldId, ...rest }) => rest));
+    if (newFiles.length > 0) {
+      await db.files.bulkPut(newFiles);
+    }
+
     set((s) => ({ chats: [row, ...s.chats] }));
     await get().selectChat(newId);
   },
 
-  sendMessage: async (text: string) => {
+  sendMessage: async (text: string, attachedFiles: ProcessedFile[] = []) => {
     const trimmed = text.trim();
-    if (!trimmed || get().streaming) return;
+    if ((!trimmed && attachedFiles.length === 0) || get().streaming) return;
 
     const { selectedKeyId, selectedModel } = useKeysStore.getState();
     if (!selectedKeyId || !selectedModel) {
@@ -440,10 +522,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let chatId = get().activeChatId;
     const now = Date.now();
 
-    // a) If no active chat, create one in db.chats (title = first 40 chars of text)
+    // Determine title
+    let initialTitle = trimmed;
+    if (!initialTitle && attachedFiles.length > 0) {
+      initialTitle = `Attachment: ${attachedFiles[0].name}`;
+    }
+    const title =
+      initialTitle.length > 40 ? initialTitle.slice(0, 40).trim() + '...' : initialTitle;
+
     if (!chatId) {
       chatId = crypto.randomUUID();
-      const title = trimmed.length > 40 ? trimmed.slice(0, 40).trim() + '...' : trimmed;
       const newChatRow: ChatRow = {
         id: chatId,
         title,
@@ -466,7 +554,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
     }
 
-    // b) Save user message to db.messages
+    // Save user message to db.messages
     const userMsgId = crypto.randomUUID();
     const userMsgRow: MsgRow = {
       id: userMsgId,
@@ -477,8 +565,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
     await db.messages.put(userMsgRow);
 
+    // Save attached files
+    const fileRows: FileRow[] = attachedFiles.map((f) => ({
+      id: crypto.randomUUID(),
+      chatId: chatId!,
+      msgId: userMsgId,
+      name: f.name,
+      mime: f.mime,
+      size: f.size,
+      kind: f.kind,
+      b64: f.b64,
+      text: f.text,
+    }));
+
+    if (fileRows.length > 0) {
+      await db.files.bulkPut(fileRows);
+    }
+
     set((state) => ({
       messages: [...state.messages, userMsgRow],
+      filesByMsgId: {
+        ...state.filesByMsgId,
+        [userMsgId]: fileRows,
+      },
     }));
 
     await runGeneration(chatId);
@@ -488,7 +597,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { streaming, activeChatId } = get();
     if (streaming || !activeChatId) return;
     await db.messages.delete(assistantMsgId);
-    set((s) => ({ messages: s.messages.filter((m) => m.id !== assistantMsgId) }));
+    await db.files.where('msgId').equals(assistantMsgId).delete();
+    set((s) => ({
+      messages: s.messages.filter((m) => m.id !== assistantMsgId),
+    }));
     await runGeneration(activeChatId);
   },
 

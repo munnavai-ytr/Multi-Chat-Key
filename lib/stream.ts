@@ -1,6 +1,127 @@
 import { proxyFetch, ProviderId } from './providers';
 
-export type Msg = { role: 'user' | 'assistant' | 'system'; content: string };
+export type Part =
+  | { kind: 'image'; mime: string; b64: string }
+  | { kind: 'pdf'; name: string; b64: string }
+  | { kind: 'text'; name: string; text: string };
+
+export type Msg = {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  parts?: Part[];
+};
+
+const fileText = (p: Extract<Part, { kind: 'text' }>) => `<file name="${p.name}">\n${p.text}\n</file>`;
+
+function toOpenAI(m: Msg) {
+  if (!m.parts || m.parts.length === 0) {
+    return { role: m.role, content: m.content };
+  }
+  const textParts = m.parts
+    .filter((p): p is Extract<Part, { kind: 'text' }> => p.kind === 'text')
+    .map(fileText);
+  const fullText = [m.content, ...textParts].filter(Boolean).join('\n\n');
+  const imageParts = m.parts.filter(
+    (p): p is Extract<Part, { kind: 'image' }> => p.kind === 'image'
+  );
+  const pdfParts = m.parts.filter(
+    (p): p is Extract<Part, { kind: 'pdf' }> => p.kind === 'pdf'
+  );
+
+  if (imageParts.length === 0 && pdfParts.length === 0) {
+    return { role: m.role, content: fullText };
+  }
+
+  const content: any[] = [];
+  if (fullText) {
+    content.push({ type: 'text', text: fullText });
+  }
+  for (const img of imageParts) {
+    content.push({
+      type: 'image_url',
+      image_url: { url: `data:${img.mime};base64,${img.b64}` },
+    });
+  }
+  for (const pdf of pdfParts) {
+    content.push({
+      type: 'image_url',
+      image_url: { url: `data:application/pdf;base64,${pdf.b64}` },
+    });
+  }
+  return { role: m.role, content };
+}
+
+function toAnthropic(m: Msg) {
+  if (!m.parts || m.parts.length === 0) {
+    return { role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content };
+  }
+  const content: any[] = [];
+  for (const p of m.parts) {
+    if (p.kind === 'text') {
+      content.push({ type: 'text', text: fileText(p) });
+    } else if (p.kind === 'image') {
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: p.mime,
+          data: p.b64,
+        },
+      });
+    } else if (p.kind === 'pdf') {
+      content.push({
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'application/pdf',
+          data: p.b64,
+        },
+      });
+    }
+  }
+  if (m.content) {
+    content.push({ type: 'text', text: m.content });
+  }
+  if (content.length === 0) {
+    content.push({ type: 'text', text: '' });
+  }
+  return { role: m.role === 'assistant' ? 'assistant' : 'user', content };
+}
+
+function toGemini(m: Msg) {
+  const parts: any[] = [];
+  if (m.parts) {
+    for (const p of m.parts) {
+      if (p.kind === 'text') {
+        parts.push({ text: fileText(p) });
+      } else if (p.kind === 'image') {
+        parts.push({
+          inlineData: {
+            mimeType: p.mime,
+            data: p.b64,
+          },
+        });
+      } else if (p.kind === 'pdf') {
+        parts.push({
+          inlineData: {
+            mimeType: 'application/pdf',
+            data: p.b64,
+          },
+        });
+      }
+    }
+  }
+  if (m.content) {
+    parts.push({ text: m.content });
+  }
+  if (parts.length === 0) {
+    parts.push({ text: '' });
+  }
+  return {
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts,
+  };
+}
 
 async function* sse(res: Response) {
   const reader = res.body!.getReader();
@@ -39,22 +160,27 @@ export async function* streamChat(o: {
   const chat = messages.filter((m) => m.role !== 'system');
   let path = '';
   let body: any;
+
   if (provider === 'anthropic') {
     path = '/messages';
-    body = { model, max_tokens: 8192, stream: true, system: sys || undefined, messages: chat };
+    body = {
+      model,
+      max_tokens: 8192,
+      stream: true,
+      system: sys || undefined,
+      messages: chat.map(toAnthropic),
+    };
   } else if (provider === 'gemini') {
     path = `/models/${model}:streamGenerateContent?alt=sse`;
     body = {
       systemInstruction: sys ? { parts: [{ text: sys }] } : undefined,
-      contents: chat.map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      })),
+      contents: chat.map(toGemini),
     };
   } else {
     path = '/chat/completions';
-    body = { model, stream: true, messages };
+    body = { model, stream: true, messages: messages.map(toOpenAI) };
   }
+
   const res = await proxyFetch({ provider, baseUrl, apiKey, path, body, signal });
   if (!res.ok) {
     let t = '';
@@ -63,6 +189,7 @@ export async function* streamChat(o: {
     } catch {}
     throw new Error(friendlyError(res.status, t));
   }
+
   for await (const d of sse(res)) {
     let j: any;
     try {

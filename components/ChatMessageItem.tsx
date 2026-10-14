@@ -1,7 +1,10 @@
+/* eslint-disable @next/next/no-img-element */
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { MsgRow } from '@/lib/db';
+import { MsgRow, FileRow } from '@/lib/db';
+import { useChatStore } from '@/store/chat';
+import { formatFileSize } from '@/lib/files';
 import {
   Sparkles,
   AlertCircle,
@@ -10,6 +13,11 @@ import {
   Check,
   Pencil,
   GitBranch,
+  FileText,
+  FileCode,
+  Download,
+  X,
+  ExternalLink,
 } from 'lucide-react';
 import { Markdown } from './Markdown';
 
@@ -37,7 +45,14 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
 
+  // Lightbox / File modal states
+  const [activeImage, setActiveImage] = useState<FileRow | null>(null);
+  const [activeTextFile, setActiveTextFile] = useState<FileRow | null>(null);
+
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Files attached to this message
+  const files = useChatStore((s) => s.filesByMsgId[message.id]) || [];
 
   useEffect(() => {
     setEditText(message.content);
@@ -65,9 +80,48 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 
   const handleSaveEdit = () => {
     const trimmed = editText.trim();
-    if (!trimmed) return;
+    if (!trimmed && files.length === 0) return;
     setIsEditing(false);
     onEditAndResend?.(message.id, trimmed);
+  };
+
+  const downloadFile = (file: FileRow) => {
+    if (file.kind === 'image' && file.b64) {
+      const a = document.createElement('a');
+      a.href = `data:${file.mime};base64,${file.b64}`;
+      a.download = file.name;
+      a.click();
+    } else if (file.kind === 'pdf' && file.b64) {
+      const a = document.createElement('a');
+      a.href = `data:${file.mime};base64,${file.b64}`;
+      a.download = file.name;
+      a.click();
+    } else if (file.kind === 'text' && file.text) {
+      const blob = new Blob([file.text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const openPdfInNewTab = (file: FileRow) => {
+    if (!file.b64) return;
+    try {
+      const byteCharacters = atob(file.b64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl, '_blank', 'noopener,noreferrer');
+    } catch {
+      downloadFile(file);
+    }
   };
 
   if (isUser) {
@@ -113,7 +167,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
               <button
                 type="button"
                 onClick={handleSaveEdit}
-                disabled={!editText.trim()}
+                disabled={!editText.trim() && files.length === 0}
                 className="px-3 py-1 rounded-lg bg-accent text-accent-fg text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity cursor-pointer"
               >
                 Save &amp; Send
@@ -126,25 +180,127 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 
     return (
       <div className="group flex flex-col items-end mb-4 px-3 sm:px-4 max-w-3xl mx-auto w-full">
-        <div className="max-w-[85%] sm:max-w-[75%] rounded-[18px] rounded-br-[4px] bg-surface2 px-4 py-2.5 text-text text-sm sm:text-base leading-relaxed whitespace-pre-wrap break-words select-text shadow-xs">
-          {message.content}
-        </div>
+        {/* Render files attached to this user message */}
+        {files.length > 0 && (
+          <div className="flex flex-wrap gap-2 justify-end mb-2 max-w-[85%] sm:max-w-[75%]">
+            {files.map((file) => {
+              if (file.kind === 'image' && file.b64) {
+                return (
+                  <button
+                    key={file.id}
+                    type="button"
+                    onClick={() => setActiveImage(file)}
+                    className="relative group/img overflow-hidden rounded-xl border border-border bg-surface2/60 hover:opacity-95 transition-opacity cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent"
+                  >
+                    <img
+                      src={`data:${file.mime};base64,${file.b64}`}
+                      alt={file.name}
+                      loading="lazy"
+                      className="w-24 h-24 sm:w-28 sm:h-28 object-cover rounded-xl"
+                    />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center text-white text-[10px] font-medium p-1 text-center truncate">
+                      Click to view
+                    </div>
+                  </button>
+                );
+              }
+
+              if (file.kind === 'pdf') {
+                return (
+                  <div
+                    key={file.id}
+                    className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface2 border border-border text-left shadow-xs hover:border-border/80 transition-colors"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center shrink-0">
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0 max-w-[150px] sm:max-w-[200px]">
+                      <p className="text-xs font-medium text-text truncate">{file.name}</p>
+                      <p className="text-[10px] text-muted">{formatFileSize(file.size)} &bull; PDF</p>
+                    </div>
+                    <div className="flex items-center gap-1 ml-1">
+                      <button
+                        type="button"
+                        onClick={() => openPdfInNewTab(file)}
+                        title="Open PDF"
+                        className="p-1 rounded-md text-muted hover:text-text hover:bg-surface transition-colors cursor-pointer"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => downloadFile(file)}
+                        title="Download PDF"
+                        className="p-1 rounded-md text-muted hover:text-text hover:bg-surface transition-colors cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              // Text / Code file
+              return (
+                <div
+                  key={file.id}
+                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface2 border border-border text-left shadow-xs hover:border-border/80 transition-colors"
+                >
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0">
+                    <FileCode className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0 max-w-[150px] sm:max-w-[200px]">
+                    <p className="text-xs font-medium text-text truncate">{file.name}</p>
+                    <p className="text-[10px] text-muted">{formatFileSize(file.size)}</p>
+                  </div>
+                  <div className="flex items-center gap-1 ml-1">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTextFile(file)}
+                      title="View file content"
+                      className="px-2 py-0.5 rounded text-[11px] font-medium text-accent hover:bg-accent/10 transition-colors cursor-pointer"
+                    >
+                      View
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => downloadFile(file)}
+                      title="Download file"
+                      className="p-1 rounded-md text-muted hover:text-text hover:bg-surface transition-colors cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* User text content */}
+        {message.content && (
+          <div className="max-w-[85%] sm:max-w-[75%] rounded-[18px] rounded-br-[4px] bg-surface2 px-4 py-2.5 text-text text-sm sm:text-base leading-relaxed whitespace-pre-wrap break-words select-text shadow-xs">
+            {message.content}
+          </div>
+        )}
 
         {/* User message actions: Copy, Edit */}
         <div className="flex items-center gap-1 mt-1 justify-end opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-          <button
-            type="button"
-            onClick={handleCopy}
-            aria-label="Copy message"
-            title={copied ? 'Copied' : 'Copy'}
-            className="p-1 rounded-md text-muted hover:text-text hover:bg-surface2 transition-colors cursor-pointer"
-          >
-            {copied ? (
-              <Check className="w-3.5 h-3.5 text-emerald-500" />
-            ) : (
-              <Copy className="w-3.5 h-3.5" />
-            )}
-          </button>
+          {message.content && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              aria-label="Copy message"
+              title={copied ? 'Copied' : 'Copy'}
+              className="p-1 rounded-md text-muted hover:text-text hover:bg-surface2 transition-colors cursor-pointer"
+            >
+              {copied ? (
+                <Check className="w-3.5 h-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+            </button>
+          )}
 
           <button
             type="button"
@@ -156,6 +312,98 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
             <Pencil className="w-3.5 h-3.5" />
           </button>
         </div>
+
+        {/* Image Lightbox Modal */}
+        {activeImage && activeImage.b64 && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-150"
+            onClick={() => setActiveImage(null)}
+          >
+            <div
+              className="relative max-w-4xl max-h-[90vh] flex flex-col items-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="absolute top-2 right-2 flex items-center gap-2 z-10 bg-black/60 rounded-full p-1 backdrop-blur-md">
+                <button
+                  type="button"
+                  onClick={() => downloadFile(activeImage)}
+                  title="Download image"
+                  className="w-8 h-8 rounded-full text-white/80 hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveImage(null)}
+                  title="Close (Esc)"
+                  className="w-8 h-8 rounded-full text-white/80 hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <img
+                src={`data:${activeImage.mime};base64,${activeImage.b64}`}
+                alt={activeImage.name}
+                className="max-h-[82vh] max-w-full rounded-2xl object-contain shadow-2xl"
+              />
+              <p className="mt-2 text-xs text-white/80 font-medium truncate max-w-md">
+                {activeImage.name} ({formatFileSize(activeImage.size)})
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Text/Code Viewer Modal */}
+        {activeTextFile && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+            onClick={() => setActiveTextFile(null)}
+          >
+            <div
+              className="bg-surface border border-border rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-surface2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileCode className="w-4 h-4 text-accent shrink-0" />
+                  <span className="text-xs sm:text-sm font-semibold text-text truncate">
+                    {activeTextFile.name}
+                  </span>
+                  <span className="text-[11px] text-muted shrink-0">
+                    ({formatFileSize(activeTextFile.size)})
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => downloadFile(activeTextFile)}
+                    title="Download"
+                    className="p-1.5 rounded-lg text-muted hover:text-text hover:bg-surface transition-colors cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTextFile(null)}
+                    title="Close"
+                    className="p-1.5 rounded-lg text-muted hover:text-text hover:bg-surface transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-auto p-4 bg-bg font-mono text-xs text-text leading-relaxed select-text whitespace-pre-wrap break-words">
+                {activeTextFile.text || '(Empty file)'}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
