@@ -5,10 +5,12 @@ import { decryptKey } from '@/lib/crypto';
 import { streamChat, Msg, Part } from '@/lib/stream';
 import { ProviderId, proxyFetch } from '@/lib/providers';
 import { ProcessedFile } from '@/lib/files';
+import { buildSystemPrompt } from '@/lib/system';
 
 interface ChatState {
   chats: ChatRow[];
   activeChatId: string | null;
+  draftProjectId: string | null;
   messages: MsgRow[];
   filesByMsgId: Record<string, FileRow[]>;
   streaming: boolean;
@@ -16,7 +18,7 @@ interface ChatState {
   abortController: AbortController | null;
   loadChats: () => Promise<void>;
   selectChat: (chatId: string) => Promise<void>;
-  newChat: () => void;
+  newChat: (projectId?: string) => void;
   deleteChat: (chatId: string) => Promise<void>;
   sendMessage: (text: string, attachedFiles?: ProcessedFile[]) => Promise<void>;
   retryMessage: (assistantMsgId: string) => Promise<void>;
@@ -162,11 +164,14 @@ async function runGeneration(chatId: string) {
     const plainApiKey = await decryptKey({ iv: keyRow.iv, ct: keyRow.ct });
 
     const state = useChatStore.getState();
+    const chat = await db.chats.get(chatId);
+    const systemPromptText = await buildSystemPrompt(chat);
+
     const history = state.messages.filter(
       (m) => m.id !== assistantMsgId && (m.role === 'user' || (m.content.trim() && !m.error))
     );
 
-    const streamMessages: Msg[] = history.map((m) => {
+    const mappedMessages: Msg[] = history.map((m) => {
       const files = state.filesByMsgId[m.id] || [];
       const parts: Part[] = files.map((f) => {
         if (f.kind === 'image') {
@@ -184,6 +189,41 @@ async function runGeneration(chatId: string) {
         parts: parts.length > 0 ? parts : undefined,
       };
     });
+
+    // Long-chat protection:
+    // If a chat has many messages (e.g. 500 messages), protect against context window / token overflow
+    // by keeping the most recent conversational messages (up to 30 messages).
+    // Ensure the conversation begins with a 'user' message for providers like Anthropic and Gemini.
+    let protectedMessages = mappedMessages;
+    const MAX_HISTORY_MESSAGES = 30;
+    if (protectedMessages.length > MAX_HISTORY_MESSAGES) {
+      protectedMessages = protectedMessages.slice(-MAX_HISTORY_MESSAGES);
+      const firstUserIdx = protectedMessages.findIndex((m) => m.role === 'user');
+      if (firstUserIdx > 0) {
+        protectedMessages = protectedMessages.slice(firstUserIdx);
+      }
+    }
+
+    // Secondary character budget guard (e.g. 100,000 characters)
+    const MAX_TOTAL_CHARS = 100000;
+    let totalChars = protectedMessages.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+    while (protectedMessages.length > 2 && totalChars > MAX_TOTAL_CHARS) {
+      const dropped = protectedMessages.shift();
+      if (dropped?.content) totalChars -= dropped.content.length;
+      if (protectedMessages[0]?.role !== 'user') {
+        const nextUserIdx = protectedMessages.findIndex((m) => m.role === 'user');
+        if (nextUserIdx > 0) {
+          protectedMessages = protectedMessages.slice(nextUserIdx);
+        }
+      }
+    }
+
+    const streamMessages: Msg[] = [
+      ...(systemPromptText.trim()
+        ? [{ role: 'system' as const, content: systemPromptText.trim() }]
+        : []),
+      ...protectedMessages,
+    ];
 
     const stream = streamChat({
       provider: keyRow.provider as ProviderId,
@@ -285,6 +325,7 @@ async function runGeneration(chatId: string) {
 export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
   activeChatId: null,
+  draftProjectId: null,
   messages: [],
   filesByMsgId: {},
   streaming: false,
@@ -315,6 +356,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         chats: allChats,
         activeChatId: activeId,
+        draftProjectId: null,
         messages: msgs,
         filesByMsgId: fileMap,
       });
@@ -338,6 +380,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     set({
       activeChatId: chatId,
+      draftProjectId: null,
       messages: msgs,
       filesByMsgId: fileMap,
       streaming: false,
@@ -345,13 +388,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  newChat: () => {
+  newChat: (projectId?: string) => {
     if (get().streaming) {
       get().stop();
     }
     db.meta.delete('activeChatId').catch(() => {});
     set({
       activeChatId: null,
+      draftProjectId: projectId || null,
       messages: [],
       filesByMsgId: {},
       streaming: false,
@@ -539,6 +583,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         updatedAt: now,
         keyId: selectedKeyId,
         model: selectedModel,
+        projectId: get().draftProjectId || undefined,
       };
       await db.chats.put(newChatRow);
       await db.meta.put({ key: 'activeChatId', value: chatId });

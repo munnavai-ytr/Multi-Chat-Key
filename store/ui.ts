@@ -7,6 +7,8 @@ interface UIState {
   setSettingsOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   modelPickerOpen: boolean;
   setModelPickerOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
+  activeView: 'chat' | 'project';
+  setActiveView: (view: 'chat' | 'project') => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -25,4 +27,6 @@ export const useUIStore = create<UIState>((set) => ({
     set((state) => ({
       modelPickerOpen: typeof open === 'function' ? open(state.modelPickerOpen) : open,
     })),
+  activeView: 'chat',
+  setActiveView: (view) => set({ activeView: view }),
 }));

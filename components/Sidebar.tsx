@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Settings, MessageSquare, X, Search } from 'lucide-react';
+import { Plus, Settings, MessageSquare, X, Search, Folder, ChevronDown, ChevronRight } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { useChatStore } from '@/store/chat';
+import { useProjectsStore } from '@/store/projects';
 import { groupChats, searchChats } from '@/lib/history';
 import { SidebarChatItem } from './SidebarChatItem';
 import { ThemeToggle } from './ThemeToggle';
@@ -14,7 +15,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isMobileDrawer = false }: SidebarProps) {
-  const { setSidebarOpen, setSettingsOpen } = useUIStore();
+  const { setSidebarOpen, setSettingsOpen, activeView, setActiveView } = useUIStore();
   const {
     chats,
     activeChatId,
@@ -24,6 +25,15 @@ export function Sidebar({ isMobileDrawer = false }: SidebarProps) {
     renameChat,
     togglePin,
   } = useChatStore();
+
+  const {
+    projects,
+    activeProjectId,
+    isProjectsOpen,
+    toggleProjectsOpen,
+    selectProject,
+    createProject,
+  } = useProjectsStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<ChatRow[] | null>(null);
@@ -57,6 +67,7 @@ export function Sidebar({ isMobileDrawer = false }: SidebarProps) {
 
   const handleSelectChat = (chatId: string) => {
     selectChat(chatId);
+    setActiveView('chat');
     if (isMobileDrawer) {
       setSidebarOpen(false);
     }
@@ -64,7 +75,25 @@ export function Sidebar({ isMobileDrawer = false }: SidebarProps) {
 
   const handleNewChat = () => {
     newChat();
+    setActiveView('chat');
     setSearchQuery('');
+    if (isMobileDrawer) {
+      setSidebarOpen(false);
+    }
+  };
+
+  const handleSelectProject = (projectId: string) => {
+    selectProject(projectId);
+    setActiveView('project');
+    if (isMobileDrawer) {
+      setSidebarOpen(false);
+    }
+  };
+
+  const handleCreateProject = async () => {
+    const newId = await createProject('New Project');
+    selectProject(newId);
+    setActiveView('project');
     if (isMobileDrawer) {
       setSidebarOpen(false);
     }
@@ -142,6 +171,66 @@ export function Sidebar({ isMobileDrawer = false }: SidebarProps) {
           )}
         </div>
       </div>
+
+      {/* Collapsible Projects section */}
+      {!isSearchActive && (
+        <div className="px-3 pb-2 shrink-0 border-b border-border/60">
+          <div className="flex items-center justify-between py-1">
+            <button
+              type="button"
+              onClick={toggleProjectsOpen}
+              className="flex items-center gap-1.5 text-[11px] font-semibold text-muted uppercase tracking-wider hover:text-text transition-colors cursor-pointer"
+            >
+              {isProjectsOpen ? (
+                <ChevronDown className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronRight className="w-3.5 h-3.5" />
+              )}
+              <span>Projects ({projects.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleCreateProject}
+              title="New project"
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-muted hover:text-text hover:bg-surface2 transition-colors cursor-pointer"
+            >
+              <Plus className="w-3 h-3" />
+              <span>New</span>
+            </button>
+          </div>
+
+          {isProjectsOpen && (
+            <div className="mt-1 space-y-0.5">
+              {projects.length === 0 ? (
+                <p className="px-2 py-1 text-[11px] text-muted/70 italic">
+                  No projects yet
+                </p>
+              ) : (
+                projects.map((proj) => {
+                  const isProjectSelected =
+                    activeView === 'project' && activeProjectId === proj.id;
+                  return (
+                    <button
+                      key={proj.id}
+                      type="button"
+                      onClick={() => handleSelectProject(proj.id)}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[10px] text-xs transition-colors cursor-pointer text-left truncate ${
+                        isProjectSelected
+                          ? 'bg-surface2 text-text font-medium'
+                          : 'text-muted hover:text-text hover:bg-surface2/60'
+                      }`}
+                    >
+                      <Folder className="w-3.5 h-3.5 shrink-0 text-accent/80" />
+                      <span className="truncate">{proj.name}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Chat list area */}
       <div className="flex-1 overflow-y-auto px-2 py-1 space-y-1">

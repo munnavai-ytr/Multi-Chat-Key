@@ -1,29 +1,32 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Menu } from 'lucide-react';
+import { Menu, Folder } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
 import { useChatStore } from '@/store/chat';
+import { useProjectsStore } from '@/store/projects';
 import { Sidebar } from './Sidebar';
 import { ThemeToggle } from './ThemeToggle';
 import { ChatMessagesList } from './ChatMessagesList';
 import { ChatInput } from './ChatInput';
 import { SettingsModal } from './SettingsModal';
 import { ModelPicker, ModelPickerTrigger } from './ModelPicker';
+import { ProjectPage } from './ProjectPage';
 
 export function AppShell() {
-  const { sidebarOpen, setSidebarOpen } = useUIStore();
+  const { sidebarOpen, setSidebarOpen, activeView, setActiveView } = useUIStore();
   const { loadKeys, checkKeysHealth } = useKeysStore();
-  const { loadChats } = useChatStore();
+  const { loadChats, chats, activeChatId, draftProjectId } = useChatStore();
+  const { activeProjectId, projects, selectProject, loadProjects } = useProjectsStore();
 
   useEffect(() => {
-    // Load keys and chats on app open
-    Promise.all([loadKeys(), loadChats()]).then(() => {
+    // Load keys, chats, and projects on app open
+    Promise.all([loadKeys(), loadChats(), loadProjects()]).then(() => {
       // Silently re-validate keys older than 6 hours sequentially
       checkKeysHealth();
     });
-  }, [loadKeys, loadChats, checkKeysHealth]);
+  }, [loadKeys, loadChats, loadProjects, checkKeysHealth]);
 
   // Global shortcuts: Ctrl/Cmd+K (search), Ctrl/Cmd+Shift+O (new chat)
   useEffect(() => {
@@ -47,6 +50,12 @@ export function AppShell() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  const currentChat = chats.find((c) => c.id === activeChatId);
+  const associatedProjectId = currentChat?.projectId || draftProjectId;
+  const associatedProject = associatedProjectId
+    ? projects.find((p) => p.id === associatedProjectId)
+    : null;
 
   return (
     <div className="flex h-dvh w-screen overflow-hidden bg-bg text-text">
@@ -104,11 +113,40 @@ export function AppShell() {
           <ThemeToggle />
         </header>
 
-        {/* Main Content Area: Chat Messages or Empty State */}
-        <ChatMessagesList />
+        {/* Main Content Area: Project Page OR Chat View */}
+        {activeView === 'project' && activeProjectId ? (
+          <ProjectPage key={activeProjectId} projectId={activeProjectId} />
+        ) : (
+          <>
+            {/* Project association indicator if chat belongs to a project */}
+            {associatedProject && (
+              <div className="bg-surface2/60 border-b border-border/80 px-4 py-1.5 flex items-center justify-between text-xs shrink-0">
+                <div className="flex items-center gap-1.5 text-muted truncate">
+                  <Folder className="w-3.5 h-3.5 text-accent shrink-0" />
+                  <span className="font-medium text-text truncate">
+                    Project: {associatedProject.name}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    selectProject(associatedProject.id);
+                    setActiveView('project');
+                  }}
+                  className="text-accent hover:underline text-xs font-medium cursor-pointer shrink-0 ml-2"
+                >
+                  View project
+                </button>
+              </div>
+            )}
 
-        {/* Fixed Bottom Input Bar */}
-        <ChatInput />
+            {/* Chat Messages or Empty State */}
+            <ChatMessagesList />
+
+            {/* Fixed Bottom Input Bar */}
+            <ChatInput />
+          </>
+        )}
       </main>
 
       {/* Settings Modal (API Keys Management) */}

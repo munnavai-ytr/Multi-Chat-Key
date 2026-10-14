@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   X,
   KeyRound,
@@ -18,7 +18,7 @@ import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
 import { ProviderId, detectProvider, listModels } from '@/lib/providers';
 import { encryptKey, decryptKey } from '@/lib/crypto';
-import { KeyRow } from '@/lib/db';
+import { db, KeyRow } from '@/lib/db';
 
 const PROVIDER_OPTIONS: { id: ProviderId; name: string; prefixHint: string }[] = [
   { id: 'openai', name: 'OpenAI', prefixHint: 'sk-...' },
@@ -62,6 +62,24 @@ export function SettingsModal() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isAddFormOpen, setIsAddFormOpen] = useState(false);
+  const [customInstructions, setCustomInstructions] = useState('');
+
+  useEffect(() => {
+    if (settingsOpen) {
+      db.meta.get('customInstructions').then((row) => {
+        if (row && typeof row.value === 'string') {
+          setCustomInstructions(row.value);
+        }
+      });
+    }
+  }, [settingsOpen]);
+
+  const handleCustomInstructionsChange = (val: string) => {
+    if (val.length <= 3000) {
+      setCustomInstructions(val);
+      db.meta.put({ key: 'customInstructions', value: val }).catch(() => {});
+    }
+  };
 
   if (!settingsOpen) return null;
 
@@ -488,6 +506,35 @@ export function SettingsModal() {
               </form>
             </div>
           )}
+
+          {/* Custom Instructions Section */}
+          <div className="pt-3 border-t border-border space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-text">
+                  Custom instructions
+                </h3>
+                <p className="text-xs text-muted">Applies to every chat</p>
+              </div>
+              <span
+                className={`text-xs ${
+                  customInstructions.length >= 3000
+                    ? 'text-rose-500 font-semibold'
+                    : 'text-muted'
+                }`}
+              >
+                {customInstructions.length} / 3000
+              </span>
+            </div>
+            <textarea
+              value={customInstructions}
+              onChange={(e) => handleCustomInstructionsChange(e.target.value)}
+              maxLength={3000}
+              placeholder="What would you like the assistant to know about you, your preferences, or how you want it to respond?"
+              rows={4}
+              className="w-full bg-surface2/60 focus:bg-surface border border-border focus:border-accent rounded-xl p-3 text-xs sm:text-sm text-text placeholder:text-muted focus:outline-none transition-colors resize-y min-h-[90px]"
+            />
+          </div>
 
           {/* Helpful Provider Links */}
           <div className="pt-2 border-t border-border">
