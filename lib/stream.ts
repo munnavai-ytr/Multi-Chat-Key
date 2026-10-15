@@ -13,14 +13,14 @@ export type Msg = {
 
 const fileText = (p: Extract<Part, { kind: 'text' }>) => `<file name="${p.name}">\n${p.text}\n</file>`;
 
-function toOpenAI(m: Msg) {
+function toOpenAI(m: Msg, provider: ProviderId) {
   if (!m.parts || m.parts.length === 0) {
     return { role: m.role, content: m.content };
   }
   const textParts = m.parts
     .filter((p): p is Extract<Part, { kind: 'text' }> => p.kind === 'text')
     .map(fileText);
-  const fullText = [m.content, ...textParts].filter(Boolean).join('\n\n');
+
   const imageParts = m.parts.filter(
     (p): p is Extract<Part, { kind: 'image' }> => p.kind === 'image'
   );
@@ -28,13 +28,26 @@ function toOpenAI(m: Msg) {
     (p): p is Extract<Part, { kind: 'pdf' }> => p.kind === 'pdf'
   );
 
-  if (imageParts.length === 0 && pdfParts.length === 0) {
-    return { role: m.role, content: fullText };
+  const validPdfs: Extract<Part, { kind: 'pdf' }>[] = [];
+  const omittedPdfNotes: string[] = [];
+
+  for (const pdf of pdfParts) {
+    if (provider === 'openai' || provider === 'openrouter') {
+      validPdfs.push(pdf);
+    } else {
+      omittedPdfNotes.push(`[PDF "${pdf.name}" omitted: this provider does not support PDF input]`);
+    }
+  }
+
+  const allText = [m.content, ...textParts, ...omittedPdfNotes].filter(Boolean).join('\n\n');
+
+  if (imageParts.length === 0 && validPdfs.length === 0) {
+    return { role: m.role, content: allText };
   }
 
   const content: any[] = [];
-  if (fullText) {
-    content.push({ type: 'text', text: fullText });
+  if (allText) {
+    content.push({ type: 'text', text: allText });
   }
   for (const img of imageParts) {
     content.push({
@@ -42,10 +55,13 @@ function toOpenAI(m: Msg) {
       image_url: { url: `data:${img.mime};base64,${img.b64}` },
     });
   }
-  for (const pdf of pdfParts) {
+  for (const pdf of validPdfs) {
     content.push({
-      type: 'image_url',
-      image_url: { url: `data:application/pdf;base64,${pdf.b64}` },
+      type: 'file',
+      file: {
+        filename: pdf.name,
+        file_data: `data:application/pdf;base64,${pdf.b64}`,
+      },
     });
   }
   return { role: m.role, content };
@@ -178,7 +194,7 @@ export async function* streamChat(o: {
     };
   } else {
     path = '/chat/completions';
-    body = { model, stream: true, messages: messages.map(toOpenAI) };
+    body = { model, stream: true, messages: messages.map((m) => toOpenAI(m, provider)) };
   }
 
   const res = await proxyFetch({ provider, baseUrl, apiKey, path, body, signal });

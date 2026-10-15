@@ -30,6 +30,7 @@ interface ChatState {
   branchFrom: (msgId: string) => Promise<void>;
 }
 
+let genToken = 0;
 let activeAbortController: AbortController | null = null;
 let accumulatedTextBuffer = '';
 let rafPending = false;
@@ -121,6 +122,9 @@ async function maybeAutoTitle(chatId: string, userText: string, assistantText: s
 }
 
 async function runGeneration(chatId: string) {
+  const myToken = ++genToken;
+  const isCurrent = () => myToken === genToken;
+
   const { selectedKeyId, selectedModel, keys } = useKeysStore.getState();
   if (!selectedKeyId || !selectedModel) {
     return;
@@ -171,8 +175,20 @@ async function runGeneration(chatId: string) {
       (m) => m.id !== assistantMsgId && (m.role === 'user' || (m.content.trim() && !m.error))
     );
 
+    const withFiles = history
+      .filter((m) => m.role === 'user' && (state.filesByMsgId[m.id]?.length ?? 0) > 0)
+      .map((m) => m.id);
+    const keepFiles = new Set(withFiles.slice(-3));
+
     const mappedMessages: Msg[] = history.map((m) => {
       const files = state.filesByMsgId[m.id] || [];
+      if (!keepFiles.has(m.id) && files.length > 0) {
+        return {
+          role: m.role,
+          content: [m.content, ...files.map((f) => `[attachment: ${f.name}]`)].filter(Boolean).join('\n'),
+        };
+      }
+
       const parts: Part[] = files.map((f) => {
         if (f.kind === 'image') {
           return { kind: 'image', mime: f.mime, b64: f.b64 || '' };
@@ -205,15 +221,20 @@ async function runGeneration(chatId: string) {
     }
 
     // Secondary character budget guard (e.g. 100,000 characters)
+    const msgChars = (m: Msg) =>
+      (m.content?.length || 0) +
+      (m.parts ?? []).reduce((s, p) => s + (p.kind === 'text' ? p.text.length : 0), 0);
+
     const MAX_TOTAL_CHARS = 100000;
-    let totalChars = protectedMessages.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+    let totalChars = protectedMessages.reduce((sum, m) => sum + msgChars(m), 0);
     while (protectedMessages.length > 2 && totalChars > MAX_TOTAL_CHARS) {
       const dropped = protectedMessages.shift();
-      if (dropped?.content) totalChars -= dropped.content.length;
+      if (dropped) totalChars -= msgChars(dropped);
       if (protectedMessages[0]?.role !== 'user') {
         const nextUserIdx = protectedMessages.findIndex((m) => m.role === 'user');
         if (nextUserIdx > 0) {
-          protectedMessages = protectedMessages.slice(nextUserIdx);
+          const removed = protectedMessages.splice(0, nextUserIdx);
+          for (const rm of removed) totalChars -= msgChars(rm);
         }
       }
     }
@@ -270,9 +291,13 @@ async function runGeneration(chatId: string) {
     await db.chats.update(chatId, { updatedAt: Date.now() });
 
     useChatStore.setState((state) => ({
-      streaming: false,
-      streamingMsgId: null,
-      abortController: null,
+      ...(isCurrent()
+        ? {
+            streaming: false,
+            streamingMsgId: null,
+            abortController: null,
+          }
+        : {}),
       messages: state.messages.map((m) =>
         m.id === assistantMsgId ? { ...m, content: finalText } : m
       ),
@@ -290,9 +315,13 @@ async function runGeneration(chatId: string) {
       const stoppedText = accumulatedTextBuffer;
       await db.messages.update(assistantMsgId, { content: stoppedText });
       useChatStore.setState((state) => ({
-        streaming: false,
-        streamingMsgId: null,
-        abortController: null,
+        ...(isCurrent()
+          ? {
+              streaming: false,
+              streamingMsgId: null,
+              abortController: null,
+            }
+          : {}),
         messages: state.messages.map((m) =>
           m.id === assistantMsgId ? { ...m, content: stoppedText } : m
         ),
@@ -310,15 +339,21 @@ async function runGeneration(chatId: string) {
     });
 
     useChatStore.setState((state) => ({
-      streaming: false,
-      streamingMsgId: null,
-      abortController: null,
+      ...(isCurrent()
+        ? {
+            streaming: false,
+            streamingMsgId: null,
+            abortController: null,
+          }
+        : {}),
       messages: state.messages.map((m) =>
         m.id === assistantMsgId ? { ...m, content: partialText, error: errorMessage } : m
       ),
     }));
   } finally {
-    activeAbortController = null;
+    if (isCurrent()) {
+      activeAbortController = null;
+    }
   }
 }
 

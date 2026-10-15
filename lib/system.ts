@@ -12,11 +12,22 @@ export async function buildSystemPrompt(chat: ChatRow | undefined): Promise<stri
       let budget = 60000;
       for (const f of files) {
         if (budget <= 0) break;
-        const text = f.text.slice(0, budget);
-        budget -= text.length;
-        parts.push(`Knowledge file "${f.name}":\n` + text);
+        const t = f.text.slice(0, budget);
+        budget -= t.length;
+        parts.push(`<project_file name="${f.name}">\n${t}\n</project_file>`);
       }
     }
   }
   return parts.join('\n\n');
+}
+
+export function trimHistory<T extends { content: string }>(msgs: T[], maxChars = 120000): T[] {
+  let total = 0;
+  const keep: T[] = [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    total += msgs[i].content.length;
+    if (total > maxChars && keep.length > 0) break;
+    keep.unshift(msgs[i]);
+  }
+  return keep;
 }
