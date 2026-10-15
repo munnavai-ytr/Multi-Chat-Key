@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Menu, Folder } from 'lucide-react';
+import { Menu, Folder, Ghost, Sparkles } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
 import { useChatStore } from '@/store/chat';
@@ -15,9 +15,17 @@ import { ModelPicker, ModelPickerTrigger } from './ModelPicker';
 import { ProjectPage } from './ProjectPage';
 
 export function AppShell() {
-  const { sidebarOpen, setSidebarOpen, activeView, setActiveView } = useUIStore();
+  const { sidebarOpen, setSidebarOpen, activeView, setActiveView, toastMessage } = useUIStore();
   const { loadKeys, checkKeysHealth } = useKeysStore();
-  const { loadChats, chats, activeChatId, draftProjectId } = useChatStore();
+  const {
+    loadChats,
+    chats,
+    activeChatId,
+    draftProjectId,
+    draftIncognito,
+    toggleIncognito,
+    setDraftIncognito,
+  } = useChatStore();
   const { activeProjectId, projects, selectProject, loadProjects } = useProjectsStore();
 
   useEffect(() => {
@@ -52,6 +60,16 @@ export function AppShell() {
   }, []);
 
   const currentChat = chats.find((c) => c.id === activeChatId);
+  const isIncognito = currentChat ? Boolean(currentChat.incognito) : draftIncognito;
+
+  const handleToggleIncognito = () => {
+    if (activeChatId) {
+      toggleIncognito(activeChatId);
+    } else {
+      setDraftIncognito(!draftIncognito);
+    }
+  };
+
   const associatedProjectId = currentChat?.projectId || draftProjectId;
   const associatedProject = associatedProjectId
     ? projects.find((p) => p.id === associatedProjectId)
@@ -102,7 +120,20 @@ export function AppShell() {
             <ModelPickerTrigger />
           </div>
 
-          <div className="shrink-0">
+          <div className="shrink-0 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={handleToggleIncognito}
+              aria-label={isIncognito ? 'Incognito mode on (memory paused)' : 'Turn on incognito mode'}
+              title={isIncognito ? 'Incognito mode on (memory paused)' : 'Turn on incognito mode'}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all cursor-pointer ${
+                isIncognito
+                  ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30'
+                  : 'text-muted hover:text-text hover:bg-surface2'
+              }`}
+            >
+              <Ghost className="w-4 h-4" />
+            </button>
             <ThemeToggle />
           </div>
         </header>
@@ -110,8 +141,32 @@ export function AppShell() {
         {/* Desktop Top Bar (>=768px) */}
         <header className="hidden md:flex h-14 border-b border-border bg-surface/50 backdrop-blur-xs px-4 items-center justify-between shrink-0 z-10">
           <ModelPickerTrigger />
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleToggleIncognito}
+              aria-label={isIncognito ? 'Incognito mode on (memory paused)' : 'Turn on incognito mode'}
+              title={isIncognito ? 'Incognito mode on (memory paused)' : 'Turn on incognito mode'}
+              className={`px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
+                isIncognito
+                  ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30'
+                  : 'border-transparent text-muted hover:text-text hover:bg-surface2'
+              }`}
+            >
+              <Ghost className="w-4 h-4" />
+              <span>{isIncognito ? 'Incognito On' : 'Incognito'}</span>
+            </button>
+            <ThemeToggle />
+          </div>
         </header>
+
+        {/* Incognito Notice Banner if active */}
+        {isIncognito && (
+          <div className="bg-purple-500/10 border-b border-purple-500/20 px-4 py-1.5 flex items-center justify-center gap-1.5 text-xs text-purple-600 dark:text-purple-400 shrink-0">
+            <Ghost className="w-3.5 h-3.5" />
+            <span className="font-medium">Incognito mode — this chat neither reads nor writes memory</span>
+          </div>
+        )}
 
         {/* Main Content Area: Project Page OR Chat View */}
         {activeView === 'project' && activeProjectId ? (
@@ -149,7 +204,15 @@ export function AppShell() {
         )}
       </main>
 
-      {/* Settings Modal (API Keys Management) */}
+      {/* Subtle Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-3.5 py-1.5 rounded-full bg-surface2/95 border border-border text-xs font-medium text-text shadow-xl backdrop-blur-md flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <Sparkles className="w-3.5 h-3.5 text-accent" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Settings Modal (API Keys Management & Long-term Memory) */}
       <SettingsModal />
 
       {/* Searchable Model Picker (Bottom Sheet on Mobile, Modal on Desktop) */}

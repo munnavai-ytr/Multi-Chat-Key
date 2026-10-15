@@ -13,12 +13,15 @@ import {
   AlertCircle,
   CheckCircle2,
   ExternalLink,
+  Brain,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
 import { ProviderId, detectProvider, listModels } from '@/lib/providers';
 import { encryptKey, decryptKey } from '@/lib/crypto';
-import { db, KeyRow } from '@/lib/db';
+import { db, KeyRow, MemoryRow } from '@/lib/db';
 
 const PROVIDER_OPTIONS: { id: ProviderId; name: string; prefixHint: string }[] = [
   { id: 'openai', name: 'OpenAI', prefixHint: 'sk-...' },
@@ -63,6 +66,24 @@ export function SettingsModal() {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isAddFormOpen, setIsAddFormOpen] = useState(false);
   const [customInstructions, setCustomInstructions] = useState('');
+  const [activeTab, setActiveTab] = useState<'keys' | 'memory'>('keys');
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [memories, setMemories] = useState<MemoryRow[]>([]);
+  const [newMemoryText, setNewMemoryText] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const loadMemories = async () => {
+    try {
+      const memMeta = await db.meta.get('memoryEnabled');
+      setMemoryEnabled(memMeta ? Boolean(memMeta.value) : true);
+      const all = await db.memories.orderBy('updatedAt').reverse().toArray();
+      setMemories(all);
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     if (settingsOpen) {
@@ -71,6 +92,7 @@ export function SettingsModal() {
           setCustomInstructions(row.value);
         }
       });
+      loadMemories();
     }
   }, [settingsOpen]);
 
@@ -79,6 +101,53 @@ export function SettingsModal() {
       setCustomInstructions(val);
       db.meta.put({ key: 'customInstructions', value: val }).catch(() => {});
     }
+  };
+
+  const handleToggleMemoryEnabled = async () => {
+    const nextVal = !memoryEnabled;
+    setMemoryEnabled(nextVal);
+    await db.meta.put({ key: 'memoryEnabled', value: nextVal });
+  };
+
+  const handleAddMemory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = newMemoryText.trim();
+    if (!text) return;
+    const now = Date.now();
+    await db.memories.put({
+      id: crypto.randomUUID(),
+      text,
+      source: 'manual',
+      createdAt: now,
+      updatedAt: now,
+    });
+    setNewMemoryText('');
+    const count = await db.memories.count();
+    if (count > 100) {
+      const old = await db.memories.orderBy('updatedAt').limit(count - 100).primaryKeys();
+      await db.memories.bulkDelete(old);
+    }
+    await loadMemories();
+  };
+
+  const handleSaveEdit = async (id: string) => {
+    const text = editingText.trim();
+    if (!text) return;
+    await db.memories.update(id, { text, updatedAt: Date.now() });
+    setEditingId(null);
+    setEditingText('');
+    await loadMemories();
+  };
+
+  const handleDeleteMemory = async (id: string) => {
+    await db.memories.delete(id);
+    await loadMemories();
+  };
+
+  const handleClearAllMemories = async () => {
+    await db.memories.clear();
+    setConfirmClear(false);
+    await loadMemories();
   };
 
   if (!settingsOpen) return null;
@@ -222,9 +291,42 @@ export function SettingsModal() {
           </button>
         </div>
 
+        {/* Navigation Tabs */}
+        <div className="flex border-b border-border px-4 sm:px-6 shrink-0 bg-surface2/30">
+          <button
+            type="button"
+            onClick={() => setActiveTab('keys')}
+            className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'keys'
+                ? 'border-accent text-text'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            <span>API Keys & Prompt</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('memory')}
+            className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'memory'
+                ? 'border-accent text-text'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            <Brain className="w-3.5 h-3.5" />
+            <span>Memory</span>
+            <span className="ml-1 text-[11px] px-1.5 py-0.2 rounded-full bg-surface2 text-muted">
+              {memories.length}/100
+            </span>
+          </button>
+        </div>
+
         {/* Modal Body */}
         <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1">
-          {/* Key Management Header & Add Key button */}
+          {activeTab === 'keys' ? (
+            <>
+              {/* Key Management Header & Add Key button */}
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-text uppercase tracking-wider">
               API Keys ({keys.length})
@@ -578,6 +680,182 @@ export function SettingsModal() {
               </a>
             </div>
           </div>
+        </>
+      ) : (
+        <div className="space-y-5">
+          {/* Master toggle */}
+          <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/60 border border-border">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-text">Long-term Memory</h3>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent font-medium">
+                  {memories.length} / 100
+                </span>
+              </div>
+              <p className="text-xs text-muted mt-0.5">
+                Automatically remember durable facts and preferences across chats
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={memoryEnabled}
+                onChange={handleToggleMemoryEnabled}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+            </label>
+          </div>
+
+          {/* Small muted explainer */}
+          <p className="text-xs text-muted leading-relaxed">
+            Memory is stored only on this device. Your chats are sent to your chosen AI provider as usual.
+          </p>
+
+          {/* Add memory form */}
+          <form onSubmit={handleAddMemory} className="flex gap-2">
+            <input
+              type="text"
+              value={newMemoryText}
+              onChange={(e) => setNewMemoryText(e.target.value)}
+              placeholder="Add a fact or preference (e.g. I prefer short answers)..."
+              maxLength={200}
+              className="flex-1 bg-surface2/60 focus:bg-surface border border-border focus:border-accent rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-text placeholder:text-muted focus:outline-none transition-colors"
+            />
+            <button
+              type="submit"
+              disabled={!newMemoryText.trim() || memories.length >= 100}
+              className="px-4 py-2.5 rounded-xl bg-accent text-accent-fg text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity shrink-0 flex items-center gap-1 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add memory</span>
+            </button>
+          </form>
+
+          {/* List of memories */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-muted px-1">
+              <span>Saved Memories</span>
+              <span>{memories.length} / 100</span>
+            </div>
+
+            {memories.length === 0 ? (
+              <div className="p-8 text-center text-xs text-muted rounded-xl border border-dashed border-border bg-surface2/30">
+                No memories saved yet. As you chat, durable facts about you will be extracted automatically, or you can add them manually above.
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
+                {memories.map((m) => (
+                  <div
+                    key={m.id}
+                    className="p-3 rounded-xl bg-surface2/50 border border-border flex items-start justify-between gap-3 text-xs group hover:border-accent/30 transition-colors"
+                  >
+                    {editingId === m.id ? (
+                      <div className="flex-1 flex gap-2 items-center">
+                        <input
+                          type="text"
+                          value={editingText}
+                          onChange={(e) => setEditingText(e.target.value)}
+                          maxLength={200}
+                          className="flex-1 bg-surface border border-accent rounded-lg px-2.5 py-1 text-xs text-text focus:outline-none"
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveEdit(m.id)}
+                          className="p-1 text-emerald-500 hover:opacity-75 cursor-pointer"
+                          title="Save"
+                        >
+                          <Check className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(null)}
+                          className="p-1 text-muted hover:text-text cursor-pointer"
+                          title="Cancel"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span
+                              className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                                m.source === 'manual'
+                                  ? 'bg-indigo-500/10 text-indigo-500'
+                                  : 'bg-emerald-500/10 text-emerald-500'
+                              }`}
+                            >
+                              {m.source}
+                            </span>
+                          </div>
+                          <p className="text-text break-words leading-relaxed">{m.text}</p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingId(m.id);
+                              setEditingText(m.text);
+                            }}
+                            className="p-1 text-muted hover:text-text rounded hover:bg-surface2 cursor-pointer"
+                            title="Edit memory"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteMemory(m.id)}
+                            className="p-1 text-muted hover:text-rose-500 rounded hover:bg-rose-500/10 cursor-pointer"
+                            title="Delete memory"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Clear all with confirm */}
+          {memories.length > 0 && (
+            <div className="pt-2 border-t border-border flex justify-end">
+              {confirmClear ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-rose-500 font-medium">Clear all memories?</span>
+                  <button
+                    type="button"
+                    onClick={handleClearAllMemories}
+                    className="px-3 py-1 rounded-lg bg-rose-500 text-white text-xs font-semibold hover:opacity-90 cursor-pointer"
+                  >
+                    Yes, clear all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClear(false)}
+                    className="px-3 py-1 rounded-lg bg-surface2 text-muted hover:text-text text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmClear(true)}
+                  className="text-xs text-muted hover:text-rose-500 transition-colors cursor-pointer"
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
         </div>
       </div>
     </div>

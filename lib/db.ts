@@ -21,6 +21,15 @@ export interface ChatRow {
   model: string;
   pinned?: boolean;
   projectId?: string;
+  incognito?: boolean;
+}
+
+export interface MemoryRow {
+  id: string;
+  text: string;
+  source: 'auto' | 'manual';
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface MsgRow {
@@ -67,6 +76,7 @@ class AppDB extends Dexie {
   files!: Table<FileRow, string>;
   projects!: Table<ProjectRow, string>;
   pfiles!: Table<ProjectFileRow, string>;
+  memories!: Table<MemoryRow, string>;
 
   constructor() {
     super('chatly');
@@ -83,6 +93,9 @@ class AppDB extends Dexie {
       chats: 'id,updatedAt,projectId',
       projects: 'id,updatedAt',
       pfiles: 'id,projectId',
+    });
+    this.version(4).stores({
+      memories: 'id,updatedAt',
     });
   }
 }

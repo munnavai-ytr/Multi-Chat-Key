@@ -1,16 +1,20 @@
 import { create } from 'zustand';
 import { db, ChatRow, MsgRow, FileRow } from '@/lib/db';
 import { useKeysStore } from '@/store/keys';
+import { useUIStore } from '@/store/ui';
 import { decryptKey } from '@/lib/crypto';
 import { streamChat, Msg, Part } from '@/lib/stream';
 import { ProviderId, proxyFetch } from '@/lib/providers';
 import { ProcessedFile } from '@/lib/files';
 import { buildSystemPrompt } from '@/lib/system';
+import { oneShot } from '@/lib/oneshot';
+import { extractMemories } from '@/lib/memory';
 
 interface ChatState {
   chats: ChatRow[];
   activeChatId: string | null;
   draftProjectId: string | null;
+  draftIncognito: boolean;
   messages: MsgRow[];
   filesByMsgId: Record<string, FileRow[]>;
   streaming: boolean;
@@ -25,6 +29,8 @@ interface ChatState {
   stop: () => void;
   renameChat: (id: string, title: string) => Promise<void>;
   togglePin: (id: string) => Promise<void>;
+  toggleIncognito: (id: string) => Promise<void>;
+  setDraftIncognito: (val: boolean) => void;
   editAndResend: (userMsgId: string, newText: string) => Promise<void>;
   regenerate: () => Promise<void>;
   branchFrom: (msgId: string) => Promise<void>;
@@ -60,50 +66,14 @@ async function maybeAutoTitle(chatId: string, userText: string, assistantText: s
 
     const promptText = `User: "${(userText || 'File attachments').slice(0, 300)}"\nAssistant: "${assistantText.slice(0, 300)}"\n\nGive a 3-6 word title for this chat. Reply with only the title.`;
 
-    const provider = keyRow.provider as ProviderId;
-    let path = '';
-    let body: any;
-
-    if (provider === 'gemini') {
-      path = `/models/${chat.model}:generateContent`;
-      body = {
-        contents: [{ role: 'user', parts: [{ text: promptText }] }],
-      };
-    } else if (provider === 'anthropic') {
-      path = '/messages';
-      body = {
-        model: chat.model,
-        max_tokens: 30,
-        messages: [{ role: 'user', content: promptText }],
-      };
-    } else {
-      path = '/chat/completions';
-      body = {
-        model: chat.model,
-        messages: [{ role: 'user', content: promptText }],
-      };
-    }
-
-    const res = await proxyFetch({
-      provider,
+    const generatedTitle = await oneShot({
+      provider: keyRow.provider as ProviderId,
       baseUrl: keyRow.baseUrl,
       apiKey: plainApiKey,
-      path,
-      body,
+      model: chat.model,
+      prompt: promptText,
+      maxTokens: 30,
     });
-
-    if (!res.ok) return;
-    const j = await res.json();
-    let generatedTitle = '';
-    if (provider === 'gemini') {
-      generatedTitle =
-        j.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
-    } else if (provider === 'anthropic') {
-      generatedTitle =
-        j.content?.map((c: any) => c.text || '').join('') || '';
-    } else {
-      generatedTitle = j.choices?.[0]?.message?.content || '';
-    }
 
     const cleanTitle = generatedTitle
       .replace(/^["'`]|["'`]$/g, '')
@@ -169,7 +139,8 @@ async function runGeneration(chatId: string) {
 
     const state = useChatStore.getState();
     const chat = await db.chats.get(chatId);
-    const systemPromptText = await buildSystemPrompt(chat);
+    const lastUserMsgForPrompt = [...state.messages].reverse().find((m) => m.role === 'user');
+    const systemPromptText = await buildSystemPrompt(chat, lastUserMsgForPrompt?.content);
 
     const history = state.messages.filter(
       (m) => m.id !== assistantMsgId && (m.role === 'user' || (m.content.trim() && !m.error))
@@ -310,6 +281,34 @@ async function runGeneration(chatId: string) {
     if (userMsg && finalText.trim()) {
       maybeAutoTitle(chatId, userMsg.content, finalText).catch(() => {});
     }
+
+    // Non-blocking memory extraction if enabled and not incognito
+    (async () => {
+      try {
+        const freshChat = await db.chats.get(chatId);
+        if (freshChat?.incognito) return;
+        const memoryMeta = await db.meta.get('memoryEnabled');
+        if (memoryMeta?.value === false) return;
+
+        const lastUser = [...useChatStore.getState().messages].reverse().find((m) => m.role === 'user');
+        if (!lastUser || !lastUser.content.trim()) return;
+
+        const count = await extractMemories({
+          provider: keyRow.provider as ProviderId,
+          baseUrl: keyRow.baseUrl,
+          apiKey: plainApiKey,
+          model: freshChat?.model || selectedModel,
+          userText: lastUser.content,
+          assistantText: finalText,
+        });
+
+        if (count > 0) {
+          useUIStore.getState().showToast('Memory updated', 2000);
+        }
+      } catch {
+        // swallow errors silently
+      }
+    })();
   } catch (err: any) {
     if (controller.signal.aborted) {
       const stoppedText = accumulatedTextBuffer;
@@ -361,6 +360,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
   activeChatId: null,
   draftProjectId: null,
+  draftIncognito: false,
   messages: [],
   filesByMsgId: {},
   streaming: false,
@@ -392,6 +392,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         chats: allChats,
         activeChatId: activeId,
         draftProjectId: null,
+        draftIncognito: false,
         messages: msgs,
         filesByMsgId: fileMap,
       });
@@ -416,6 +417,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       activeChatId: chatId,
       draftProjectId: null,
+      draftIncognito: false,
       messages: msgs,
       filesByMsgId: fileMap,
       streaming: false,
@@ -431,6 +433,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       activeChatId: null,
       draftProjectId: projectId || null,
+      draftIncognito: false,
       messages: [],
       filesByMsgId: {},
       streaming: false,
@@ -495,6 +498,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       chats: state.chats.map((c) => (c.id === id ? { ...c, pinned: nextPinned } : c)),
     }));
+  },
+
+  toggleIncognito: async (id: string) => {
+    const chat = get().chats.find((c) => c.id === id);
+    if (!chat) return;
+    const nextVal = !chat.incognito;
+    await db.chats.update(id, { incognito: nextVal });
+    set((state) => ({
+      chats: state.chats.map((c) => (c.id === id ? { ...c, incognito: nextVal } : c)),
+    }));
+  },
+
+  setDraftIncognito: (val: boolean) => {
+    set({ draftIncognito: val });
   },
 
   editAndResend: async (userMsgId, newText) => {
@@ -619,6 +636,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         keyId: selectedKeyId,
         model: selectedModel,
         projectId: get().draftProjectId || undefined,
+        incognito: get().draftIncognito || false,
       };
       await db.chats.put(newChatRow);
       await db.meta.put({ key: 'activeChatId', value: chatId });

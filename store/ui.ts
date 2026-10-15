@@ -9,7 +9,11 @@ interface UIState {
   setModelPickerOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   activeView: 'chat' | 'project';
   setActiveView: (view: 'chat' | 'project') => void;
+  toastMessage: string | null;
+  showToast: (msg: string, duration?: number) => void;
 }
+
+let toastTimer: any = null;
 
 export const useUIStore = create<UIState>((set) => ({
   sidebarOpen: false,
@@ -29,4 +33,12 @@ export const useUIStore = create<UIState>((set) => ({
     })),
   activeView: 'chat',
   setActiveView: (view) => set({ activeView: view }),
+  toastMessage: null,
+  showToast: (msg, duration = 2000) => {
+    if (toastTimer) clearTimeout(toastTimer);
+    set({ toastMessage: msg });
+    toastTimer = setTimeout(() => {
+      set((state) => (state.toastMessage === msg ? { toastMessage: null } : state));
+    }, duration);
+  },
 }));

@@ -1,6 +1,11 @@
 import { db, ChatRow } from './db';
+import { relevantMemories } from './memory';
 
-export async function buildSystemPrompt(chat: ChatRow | undefined): Promise<string> {
+export async function buildSystemPrompt(
+  chat: ChatRow | undefined,
+  userText?: string,
+  useMemory?: boolean
+): Promise<string> {
   const parts: string[] = [];
   const ci = (await db.meta.get('customInstructions'))?.value as string | undefined;
   if (ci?.trim()) parts.push('User instructions (always follow):\n' + ci.trim());
@@ -18,6 +23,21 @@ export async function buildSystemPrompt(chat: ChatRow | undefined): Promise<stri
       }
     }
   }
+
+  const isIncognito = Boolean(chat?.incognito);
+  const memoryEnabledMeta = (await db.meta.get('memoryEnabled'))?.value;
+  const isMemoryEnabled = (useMemory !== undefined ? useMemory : (memoryEnabledMeta !== false)) && !isIncognito;
+
+  if (isMemoryEnabled) {
+    const memories = await relevantMemories(userText || '');
+    if (memories.length > 0) {
+      parts.push(
+        'Things you know about the user (use naturally, never mention that you have a memory feature unless asked):\n' +
+          memories.map((m) => `- ${m}`).join('\n')
+      );
+    }
+  }
+
   return parts.join('\n\n');
 }
 

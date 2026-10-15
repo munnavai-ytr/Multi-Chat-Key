@@ -31,6 +31,7 @@ export function ChatInput() {
   const [attachments, setAttachments] = useState<ProcessedFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
+  const [compatDismissed, setCompatDismissed] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -40,6 +41,22 @@ export function ChatInput() {
   const { streaming, sendMessage, stop } = useChatStore();
   const { keys, selectedKeyId, selectedModel } = useKeysStore();
   const { setSettingsOpen } = useUIStore();
+
+  const currentKey = keys.find((k) => k.id === selectedKeyId);
+  const currentProvider = currentKey?.provider;
+  const hasUnsupportedFileType =
+    (currentProvider === 'groq' || currentProvider === 'custom') &&
+    attachments.some((f) => f.kind === 'pdf' || f.kind === 'image');
+  const showCompatWarning = hasUnsupportedFileType && !compatDismissed;
+
+  useEffect(() => {
+    if (!hasUnsupportedFileType) {
+      setCompatDismissed(false);
+    }
+  }, [hasUnsupportedFileType]);
+
+  const totalAttachmentSize = attachments.reduce((s, f) => s + f.size, 0);
+  const showLargeFileHint = totalAttachmentSize > 3 * 1024 * 1024;
 
   const hasKey = keys.length > 0 && Boolean(selectedKeyId);
   const hasModel = Boolean(selectedModel);
@@ -221,6 +238,24 @@ export function ChatInput() {
           </div>
         )}
 
+        {/* Compatibility warning for groq/custom with PDF/images */}
+        {showCompatWarning && (
+          <div className="mb-2 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs flex items-center justify-between gap-2 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>This provider may not support this file type. You can still send.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCompatDismissed(true)}
+              aria-label="Dismiss warning"
+              className="p-0.5 hover:opacity-70 cursor-pointer shrink-0"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Hidden file inputs */}
         <input
           ref={fileInputRef}
@@ -305,6 +340,13 @@ export function ChatInput() {
                 </div>
               )}
             </div>
+          )}
+
+          {/* FIX 6: Big attachments hint on serverless hosts */}
+          {showLargeFileHint && (
+            <p className="text-[11px] text-muted px-2 pb-1.5">
+              Large files may fail on some hosting platforms.
+            </p>
           )}
 
           <div className="flex items-end gap-1.5">
