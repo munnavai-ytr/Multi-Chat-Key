@@ -5,8 +5,8 @@ interface UIState {
   setSidebarOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   settingsOpen: boolean;
   setSettingsOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
-  settingsTab: 'keys' | 'search' | 'memory' | 'usage' | 'data';
-  setSettingsTab: (tab: 'keys' | 'search' | 'memory' | 'usage' | 'data') => void;
+  settingsTab: 'keys' | 'search' | 'memory' | 'usage' | 'data' | 'tools';
+  setSettingsTab: (tab: 'keys' | 'search' | 'memory' | 'usage' | 'data' | 'tools') => void;
   modelPickerOpen: boolean;
   setModelPickerOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   activeView: 'chat' | 'project';
@@ -15,6 +15,8 @@ interface UIState {
   setArtifact: (artifact: { lang: string; code: string; title?: string } | null) => void;
   toastMessage: string | null;
   showToast: (msg: string, duration?: number) => void;
+  codeConfirmModal: { lang: string; code: string; resolve: (ok: boolean) => void } | null;
+  setCodeConfirmModal: (modal: { lang: string; code: string; resolve: (ok: boolean) => void } | null) => void;
 }
 
 let toastTimer: any = null;
@@ -49,4 +51,6 @@ export const useUIStore = create<UIState>((set) => ({
       set((state) => (state.toastMessage === msg ? { toastMessage: null } : state));
     }, duration);
   },
+  codeConfirmModal: null,
+  setCodeConfirmModal: (modal) => set({ codeConfirmModal: modal }),
 }));

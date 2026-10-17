@@ -45,6 +45,8 @@ export interface MsgRow {
   usage?: { in: number; out: number };
   model?: string;
   provider?: string;
+  tools?: { id: string; name: string; label: string; status: 'running' | 'done' | 'error'; detail?: string }[];
+  artifacts?: { id: string; title: string; type: string; code: string }[];
 }
 
 export interface FileRow {

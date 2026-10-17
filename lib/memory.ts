@@ -12,6 +12,21 @@ const similar = (a: string, b: string) => {
   return n / Math.min(A.size, B.size) > 0.8;
 };
 
+export async function saveMemoryFact(text: string): Promise<boolean> {
+  const clean = text.trim().slice(0, 200);
+  if (clean.length < 5 || SECRET.test(clean)) return false;
+  const existing = await db.memories.toArray();
+  if (existing.some((e) => similar(e.text, clean))) return false;
+  const now = Date.now();
+  await db.memories.put({ id: crypto.randomUUID(), text: clean, source: 'auto', createdAt: now, updatedAt: now });
+  const count = await db.memories.count();
+  if (count > 100) {
+    const old = await db.memories.orderBy('updatedAt').limit(count - 100).primaryKeys();
+    await db.memories.bulkDelete(old);
+  }
+  return true;
+}
+
 export async function extractMemories(o: {
   provider: ProviderId | any;
   baseUrl?: string;

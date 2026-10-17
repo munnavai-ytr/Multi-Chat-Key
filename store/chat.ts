@@ -3,13 +3,17 @@ import { db, ChatRow, MsgRow, FileRow } from '@/lib/db';
 import { useKeysStore } from '@/store/keys';
 import { useUIStore } from '@/store/ui';
 import { decryptKey } from '@/lib/crypto';
-import { streamChat, Msg, Part } from '@/lib/stream';
+import { streamChat, Msg, Part, AMsg, AgentEvent, ToolCall } from '@/lib/stream';
 import { ProviderId, proxyFetch } from '@/lib/providers';
 import { ProcessedFile } from '@/lib/files';
 import { buildSystemPrompt } from '@/lib/system';
 import { oneShot } from '@/lib/oneshot';
 import { extractMemories } from '@/lib/memory';
 import { webSearch, searchContext, SearchHit } from '@/lib/search';
+import { SMART_PROMPT } from '@/lib/tools';
+import { getEnabledTools, toolLabel } from '@/lib/agent-config';
+import { executeTool, ToolCtx } from '@/lib/agent-tools';
+import { routeIntent } from '@/lib/intent';
 
 interface ChatState {
   chats: ChatRow[];
@@ -151,63 +155,6 @@ async function runGeneration(chatId: string) {
     const lastUserMsgForPrompt = [...state.messages].reverse().find((m) => m.role === 'user');
     let systemPromptText = await buildSystemPrompt(chat, lastUserMsgForPrompt?.content);
 
-    // Optional Web Search
-    let searchHits: SearchHit[] = [];
-    let searchNotice: string | undefined = undefined;
-
-    if (state.webSearchEnabled && state.hasSearchKey) {
-      const searchRow = await db.meta.get('searchKey');
-      if (searchRow && searchRow.value && searchRow.value.ct) {
-        useChatStore.setState({ isSearchingWeb: true });
-        try {
-          const plainSearchKey = await decryptKey(searchRow.value);
-          let searchQuery = (lastUserMsgForPrompt?.content || '').trim();
-
-          // If text is longer than 200 chars use oneShot to produce a short query
-          if (searchQuery.length > 200) {
-            try {
-              const condensed = await oneShot({
-                provider: keyRow.provider as ProviderId,
-                baseUrl: keyRow.baseUrl,
-                apiKey: plainApiKey,
-                model: selectedModel,
-                prompt: `Produce a short, high-quality search engine query (under 10 words) for this question. Reply ONLY with the query without quotes:\n\n${searchQuery.slice(0, 500)}`,
-                maxTokens: 30,
-              });
-              const cleanCondensed = condensed.replace(/^["'`]|["'`]$/g, '').trim();
-              if (cleanCondensed) searchQuery = cleanCondensed;
-            } catch {
-              searchQuery = searchQuery.slice(0, 200);
-            }
-          }
-
-          if (searchQuery) {
-            searchHits = await webSearch(plainSearchKey, searchQuery, controller.signal);
-            if (searchHits.length > 0) {
-              const ctx = searchContext(searchHits);
-              systemPromptText = systemPromptText ? `${systemPromptText}\n\n${ctx}` : ctx;
-            }
-          }
-        } catch {
-          if (!controller.signal.aborted) {
-            searchNotice = 'Search failed, answered without web results';
-          }
-        } finally {
-          useChatStore.setState({ isSearchingWeb: false });
-        }
-
-        const sources = searchHits.length > 0 ? searchHits.map((h) => ({ title: h.title, url: h.url })) : undefined;
-        if (sources || searchNotice) {
-          await db.messages.update(assistantMsgId, { sources, searchNotice });
-          useChatStore.setState((s) => ({
-            messages: s.messages.map((m) =>
-              m.id === assistantMsgId ? { ...m, sources, searchNotice } : m
-            ),
-          }));
-        }
-      }
-    }
-
     const history = state.messages.filter(
       (m) => m.id !== assistantMsgId && (m.role === 'user' || (m.content.trim() && !m.error))
     );
@@ -243,10 +190,6 @@ async function runGeneration(chatId: string) {
       };
     });
 
-    // Long-chat protection:
-    // If a chat has many messages (e.g. 500 messages), protect against context window / token overflow
-    // by keeping the most recent conversational messages (up to 30 messages).
-    // Ensure the conversation begins with a 'user' message for providers like Anthropic and Gemini.
     let protectedMessages = mappedMessages;
     const MAX_HISTORY_MESSAGES = 30;
     if (protectedMessages.length > MAX_HISTORY_MESSAGES) {
@@ -257,7 +200,6 @@ async function runGeneration(chatId: string) {
       }
     }
 
-    // Secondary character budget guard (e.g. 100,000 characters)
     const msgChars = (m: Msg) =>
       (m.content?.length || 0) +
       (m.parts ?? []).reduce((s, p) => s + (p.kind === 'text' ? p.text.length : 0), 0);
@@ -276,64 +218,244 @@ async function runGeneration(chatId: string) {
       }
     }
 
-    const streamMessages: Msg[] = [
-      ...(systemPromptText.trim()
-        ? [{ role: 'system' as const, content: systemPromptText.trim() }]
-        : []),
+    const enabledTools = await getEnabledTools();
+    const toolsOffKey = `toolsOff:${keyRow.provider}:${selectedModel}`;
+    const toolsDisabledByError = (await db.meta.get(toolsOffKey))?.value === true;
+    const effectiveTools = toolsDisabledByError ? [] : enabledTools;
+
+    const finalSystemPrompt = effectiveTools.length > 0
+      ? (systemPromptText ? `${systemPromptText}\n\n${SMART_PROMPT}` : SMART_PROMPT)
+      : systemPromptText;
+
+    let convo: AMsg[] = [
+      ...(finalSystemPrompt.trim() ? [{ role: 'system' as const, content: finalSystemPrompt.trim() }] : []),
       ...protectedMessages,
     ];
 
-    const stream = streamChat({
-      provider: keyRow.provider as ProviderId,
-      baseUrl: keyRow.baseUrl,
-      apiKey: plainApiKey,
-      model: selectedModel,
-      messages: streamMessages,
-      signal: controller.signal,
-      onUsage: (u) => {
-        finalUsage = u;
-      },
-    });
+    let finalUsage: { in: number; out: number } | undefined = undefined;
+    let accumulatedTools: { id: string; name: string; label: string; status: 'running' | 'done' | 'error'; detail?: string }[] = [];
+    let accumulatedSources: { title: string; url: string }[] = [];
+    let accumulatedArtifacts: { id: string; title: string; type: string; code: string }[] = [];
 
-    for await (const chunk of stream) {
-      if (controller.signal.aborted) break;
+    const MAX_STEPS = 6;
+    let runSuccess = false;
 
-      accumulatedTextBuffer += chunk;
+    for (let step = 0; step < MAX_STEPS; step++) {
+      const calls: ToolCall[] = [];
+      let stepText = '';
 
-      if (!rafPending) {
-        rafPending = true;
-        requestAnimationFrame(() => {
-          rafPending = false;
-          const textToFlush = accumulatedTextBuffer;
-          useChatStore.setState((state) => ({
-            messages: state.messages.map((m) =>
-              m.id === assistantMsgId ? { ...m, content: textToFlush } : m
-            ),
-          }));
+      try {
+        const stream = streamChat({
+          provider: keyRow.provider as ProviderId,
+          baseUrl: keyRow.baseUrl,
+          apiKey: plainApiKey,
+          model: selectedModel,
+          messages: convo,
+          tools: effectiveTools,
+          signal: controller.signal,
         });
+
+        for await (const ev of stream) {
+          if (controller.signal.aborted) break;
+          if (ev.type === 'text') {
+            stepText += ev.text;
+            accumulatedTextBuffer += ev.text;
+            if (!rafPending) {
+              rafPending = true;
+              requestAnimationFrame(() => {
+                rafPending = false;
+                const textToFlush = accumulatedTextBuffer;
+                useChatStore.setState((state) => ({
+                  messages: state.messages.map((m) =>
+                    m.id === assistantMsgId ? { ...m, content: textToFlush } : m
+                  ),
+                }));
+              });
+            }
+          } else if (ev.type === 'tool_call') {
+            calls.push(ev.call);
+          } else if (ev.type === 'usage') {
+            finalUsage = ev;
+          }
+        }
+        runSuccess = true;
+      } catch (err: any) {
+        const msg = String(err?.message || err);
+        if (effectiveTools.length > 0 && /tool|function|unsupported|400|404|422/i.test(msg)) {
+          await db.meta.put({ key: toolsOffKey, value: true });
+          useUIStore.getState().showToast('This model has no tool support; using basic smart mode.', 4000);
+
+          const lastUser = [...history].reverse().find((m) => m.role === 'user')?.content || '';
+          const intent = await routeIntent(lastUser, {
+            provider: keyRow.provider,
+            baseUrl: keyRow.baseUrl,
+            apiKey: plainApiKey,
+            model: selectedModel,
+          });
+
+          let fallbackSys = systemPromptText;
+          if (intent.search) {
+            try {
+              const searchRow = await db.meta.get('searchKey');
+              if (searchRow?.value) {
+                const hits = await webSearch(await decryptKey(searchRow.value), intent.search, controller.signal);
+                if (hits.length > 0) {
+                  accumulatedSources = hits.map((h) => ({ title: h.title, url: h.url }));
+                  fallbackSys = fallbackSys ? `${fallbackSys}\n\n${searchContext(hits)}` : searchContext(hits);
+                }
+              }
+            } catch {}
+          }
+          if (intent.artifact) {
+            fallbackSys = fallbackSys ? `${fallbackSys}\n\nWhen writing code blocks for web pages, UIs, or games, always output ONE self-contained html block.` : `When writing code blocks for web pages, UIs, or games, always output ONE self-contained html block.`;
+          }
+
+          const fallbackMessages: Msg[] = [
+            ...(fallbackSys.trim() ? [{ role: 'system' as const, content: fallbackSys.trim() }] : []),
+            ...protectedMessages,
+          ];
+
+          const fallbackStream = streamChat({
+            provider: keyRow.provider as ProviderId,
+            baseUrl: keyRow.baseUrl,
+            apiKey: plainApiKey,
+            model: selectedModel,
+            messages: fallbackMessages,
+            tools: [],
+            signal: controller.signal,
+          });
+
+          for await (const ev of fallbackStream) {
+            if (controller.signal.aborted) break;
+            if (ev.type === 'text') {
+              stepText += ev.text;
+              accumulatedTextBuffer += ev.text;
+              if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(() => {
+                  rafPending = false;
+                  const textToFlush = accumulatedTextBuffer;
+                  useChatStore.setState((state) => ({
+                    messages: state.messages.map((m) =>
+                      m.id === assistantMsgId ? { ...m, content: textToFlush } : m
+                    ),
+                  }));
+                });
+              }
+            } else if (ev.type === 'usage') {
+              finalUsage = ev;
+            }
+          }
+          runSuccess = true;
+          break;
+        } else {
+          throw err;
+        }
       }
 
-      const currentTimestamp = Date.now();
-      if (currentTimestamp - lastCheckpoint > 2000) {
-        lastCheckpoint = currentTimestamp;
-        db.messages.update(assistantMsgId, { content: accumulatedTextBuffer }).catch(() => {});
+      if (!calls.length || controller.signal.aborted || !runSuccess) break;
+
+      accumulatedTextBuffer += '\n\n';
+      convo.push({ role: 'assistant', content: stepText, toolCalls: calls });
+
+      for (const c of calls) {
+        const tItem = {
+          id: c.id,
+          name: c.name,
+          label: toolLabel(c),
+          status: 'running' as const,
+        };
+        accumulatedTools.push(tItem);
+        await db.messages.update(assistantMsgId, { tools: [...accumulatedTools] });
+        useChatStore.setState((s) => ({
+          messages: s.messages.map((m) =>
+            m.id === assistantMsgId ? { ...m, tools: [...accumulatedTools] } : m
+          ),
+        }));
+
+        const toolCtx: ToolCtx = {
+          chatId,
+          msgId: assistantMsgId,
+          signal: controller.signal,
+          confirmRun: async (lang, code) => {
+            return new Promise((resolve) => {
+              useUIStore.getState().setCodeConfirmModal({ lang, code, resolve });
+            });
+          },
+          openArtifact: (artifact) => {
+            accumulatedArtifacts.push(artifact);
+            useUIStore.setState({ artifact });
+          },
+        };
+
+        const r = await executeTool(c, toolCtx);
+
+        const target = accumulatedTools.find((t) => t.id === c.id);
+        if (target) {
+          target.status = r.ok ? 'done' : 'error';
+          target.detail = r.text.slice(0, 2000);
+        }
+
+        if (r.sources) {
+          for (const s of r.sources) {
+            if (!accumulatedSources.some((x) => x.url === s.url)) {
+              accumulatedSources.push(s);
+            }
+          }
+        }
+        if (r.artifact) {
+          if (!accumulatedArtifacts.some((a) => a.id === r.artifact.id)) {
+            accumulatedArtifacts.push(r.artifact);
+          } else {
+            accumulatedArtifacts = accumulatedArtifacts.map((a) =>
+              a.id === r.artifact.id ? r.artifact : a
+            );
+          }
+        }
+
+        await db.messages.update(assistantMsgId, {
+          tools: [...accumulatedTools],
+          sources: accumulatedSources.length > 0 ? accumulatedSources : undefined,
+          artifacts: accumulatedArtifacts.length > 0 ? accumulatedArtifacts : undefined,
+        });
+
+        useChatStore.setState((s) => ({
+          messages: s.messages.map((m) =>
+            m.id === assistantMsgId
+              ? {
+                  ...m,
+                  tools: [...accumulatedTools],
+                  sources: accumulatedSources.length > 0 ? accumulatedSources : undefined,
+                  artifacts: accumulatedArtifacts.length > 0 ? accumulatedArtifacts : undefined,
+                }
+              : m
+          ),
+        }));
+
+        convo.push({ role: 'tool', toolCallId: c.id, name: c.name, content: r.text });
+      }
+
+      if (step === MAX_STEPS - 2) {
+        convo.push({
+          role: 'user',
+          content: 'Tool limit reached. Write the final answer now without more tool calls.',
+        });
       }
     }
 
-    // Empty reply check
     if (!controller.signal.aborted && accumulatedTextBuffer.trim() === '') {
       throw new Error('The model returned an empty response. Try another model.');
     }
 
-    // Write final content to Dexie and state when streaming ends
     const finalText = accumulatedTextBuffer;
-    let finalUsage: { in: number; out: number } | undefined;
-    
-    await db.messages.update(assistantMsgId, { 
+    await db.messages.update(assistantMsgId, {
       content: finalText,
       usage: finalUsage,
       model: selectedModel,
       provider: keyRow.provider,
+      tools: accumulatedTools.length > 0 ? accumulatedTools : undefined,
+      sources: accumulatedSources.length > 0 ? accumulatedSources : undefined,
+      artifacts: accumulatedArtifacts.length > 0 ? accumulatedArtifacts : undefined,
     });
     await db.chats.update(chatId, { updatedAt: Date.now() });
 
@@ -346,9 +468,98 @@ async function runGeneration(chatId: string) {
           }
         : {}),
       messages: state.messages.map((m) =>
-        m.id === assistantMsgId ? { ...m, content: finalText, usage: finalUsage, model: selectedModel, provider: keyRow.provider } : m
+        m.id === assistantMsgId
+          ? {
+              ...m,
+              content: finalText,
+              usage: finalUsage,
+              model: selectedModel,
+              provider: keyRow.provider,
+              tools: accumulatedTools.length > 0 ? accumulatedTools : undefined,
+              sources: accumulatedSources.length > 0 ? accumulatedSources : undefined,
+              artifacts: accumulatedArtifacts.length > 0 ? accumulatedArtifacts : undefined,
+            }
+          : m
       ),
     }));
+
+    const userMsg = useChatStore
+      .getState()
+      .messages.find((m) => m.role === 'user');
+    if (userMsg && finalText.trim()) {
+      maybeAutoTitle(chatId, userMsg.content, finalText).catch(() => {});
+    }
+
+    (async () => {
+      try {
+        const freshChat = await db.chats.get(chatId);
+        if (freshChat?.incognito) return;
+        const memoryMeta = await db.meta.get('memoryEnabled');
+        if (memoryMeta?.value === false) return;
+
+        const lastUser = [...useChatStore.getState().messages].reverse().find((m) => m.role === 'user');
+        if (!lastUser || !lastUser.content.trim()) return;
+
+        const count = await extractMemories({
+          provider: keyRow.provider as ProviderId,
+          baseUrl: keyRow.baseUrl,
+          apiKey: plainApiKey,
+          model: freshChat?.model || selectedModel,
+          userText: lastUser.content,
+          assistantText: finalText,
+        });
+
+        if (count > 0) {
+          useUIStore.getState().showToast('Memory updated', 2000);
+        }
+      } catch {}
+    })();
+  } catch (err: any) {
+    if (controller.signal.aborted) {
+      const stoppedText = accumulatedTextBuffer;
+      await db.messages.update(assistantMsgId, { content: stoppedText });
+      useChatStore.setState((state) => ({
+        ...(isCurrent()
+          ? {
+              streaming: false,
+              streamingMsgId: null,
+              abortController: null,
+            }
+          : {}),
+        messages: state.messages.map((m) =>
+          m.id === assistantMsgId ? { ...m, content: stoppedText } : m
+        ),
+      }));
+      return;
+    }
+
+    const errorMessage =
+      err instanceof Error ? err.message : 'An unexpected error occurred while generating response.';
+    const partialText = accumulatedTextBuffer;
+
+    await db.messages.update(assistantMsgId, {
+      content: partialText,
+      error: errorMessage,
+    });
+
+    useChatStore.setState((state) => ({
+      ...(isCurrent()
+        ? {
+            streaming: false,
+            streamingMsgId: null,
+            abortController: null,
+          }
+        : {}),
+      messages: state.messages.map((m) =>
+        m.id === assistantMsgId ? { ...m, content: partialText, error: errorMessage } : m
+      ),
+    }));
+  } finally {
+    if (isCurrent()) {
+      activeAbortController = null;
+    }
+  }
+}
 
     // Non-blocking auto-title after first assistant reply finishes
     const userMsg = useChatStore

@@ -119,6 +119,31 @@ export function SettingsModal() {
     setIsCheckingStorage(false);
   };
 
+  // AI Tools state
+  const [smartMode, setSmartMode] = useState(true);
+  const [toolWebSearch, setToolWebSearch] = useState(true);
+  const [toolArtifact, setToolArtifact] = useState(true);
+  const [toolRunCode, setToolRunCode] = useState(true);
+  const [toolRemember, setToolRemember] = useState(true);
+  const [toolRunAsk, setToolRunAsk] = useState(true);
+
+  const loadToolSettings = async () => {
+    try {
+      const sm = await db.meta.get('smartMode');
+      if (sm !== undefined) setSmartMode(Boolean(sm.value));
+      const ws = await db.meta.get('tool:web_search');
+      if (ws !== undefined) setToolWebSearch(Boolean(ws.value));
+      const ca = await db.meta.get('tool:create_artifact');
+      if (ca !== undefined) setToolArtifact(Boolean(ca.value));
+      const rc = await db.meta.get('tool:run_code');
+      if (rc !== undefined) setToolRunCode(Boolean(rc.value));
+      const rem = await db.meta.get('tool:remember');
+      if (rem !== undefined) setToolRemember(Boolean(rem.value));
+      const ask = await db.meta.get('toolRunAsk');
+      if (ask !== undefined) setToolRunAsk(Boolean(ask.value));
+    } catch {}
+  };
+
   const loadMemories = async () => {
     try {
       const memMeta = await db.meta.get('memoryEnabled');
@@ -161,6 +186,7 @@ export function SettingsModal() {
       });
       loadMemories();
       loadSearchKeyInfo();
+      loadToolSettings();
     }, 0);
     return () => clearTimeout(timer);
   }, [settingsOpen]);
@@ -461,6 +487,18 @@ export function SettingsModal() {
         <div className="flex border-b border-border px-4 sm:px-6 shrink-0 bg-surface2/30 overflow-x-auto scrollbar-none">
           <button
             type="button"
+            onClick={() => setSettingsTab('tools')}
+            className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
+              settingsTab === 'tools'
+                ? 'border-accent text-text'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            <Brain className="w-3.5 h-3.5 text-accent" />
+            <span>AI Tools</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsTab('keys')}
             className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
               settingsTab === 'keys'
@@ -529,7 +567,155 @@ export function SettingsModal() {
 
         {/* Modal Body */}
         <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1">
-          {settingsTab === 'keys' ? (
+          {settingsTab === 'tools' ? (
+            <div className="space-y-5">
+              <div className="p-4 rounded-xl bg-surface2/60 border border-border space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-text">Smart Mode</h3>
+                    <p className="text-xs text-muted">AI decides when to use tools automatically</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={smartMode}
+                      onChange={async (e) => {
+                        const val = e.target.checked;
+                        setSmartMode(val);
+                        await db.meta.put({ key: 'smartMode', value: val });
+                      }}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+                  </label>
+                </div>
+                <p className="text-xs text-muted leading-relaxed">
+                  The AI decides when to use these. You can also just ask: &apos;search the web for...&apos;, &apos;make a landing page&apos;, &apos;calculate...&apos;.
+                </p>
+              </div>
+
+              {smartMode && (
+                <div className="space-y-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted px-1">Enabled Tools</h4>
+
+                  {/* Web Search Tool */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border">
+                    <div className="space-y-0.5">
+                      <span className="text-xs font-semibold text-text">Web Search</span>
+                      <p className="text-[11px] text-muted">Search live web for current facts & news</p>
+                      {!hasSavedSearchKey && (
+                        <button
+                          type="button"
+                          onClick={() => setSettingsTab('search')}
+                          className="text-xs text-accent hover:underline font-medium inline-block mt-1 cursor-pointer"
+                        >
+                          + Add Tavily API key required for web search
+                        </button>
+                      )}
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={toolWebSearch}
+                        disabled={!hasSavedSearchKey}
+                        onChange={async (e) => {
+                          const val = e.target.checked;
+                          setToolWebSearch(val);
+                          await db.meta.put({ key: 'tool:web_search', value: val });
+                        }}
+                        className="sr-only peer disabled:opacity-40"
+                      />
+                      <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent peer-disabled:opacity-40" />
+                    </label>
+                  </div>
+
+                  {/* Create Artifact Tool */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border">
+                    <div>
+                      <span className="text-xs font-semibold text-text">Create Artifact</span>
+                      <p className="text-[11px] text-muted">Generate interactive apps, HTML, SVG & React previews</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={toolArtifact}
+                        onChange={async (e) => {
+                          const val = e.target.checked;
+                          setToolArtifact(val);
+                          await db.meta.put({ key: 'tool:create_artifact', value: val });
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+                    </label>
+                  </div>
+
+                  {/* Run Code Tool */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border">
+                    <div>
+                      <span className="text-xs font-semibold text-text">Run Code</span>
+                      <p className="text-[11px] text-muted">Execute Python & JavaScript in secure sandbox</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={toolRunCode}
+                        onChange={async (e) => {
+                          const val = e.target.checked;
+                          setToolRunCode(val);
+                          await db.meta.put({ key: 'tool:run_code', value: val });
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+                    </label>
+                  </div>
+
+                  {/* Remember Tool */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border">
+                    <div>
+                      <span className="text-xs font-semibold text-text">Remember</span>
+                      <p className="text-[11px] text-muted">Save durable user facts & preferences across chats</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={toolRemember}
+                        onChange={async (e) => {
+                          const val = e.target.checked;
+                          setToolRemember(val);
+                          await db.meta.put({ key: 'tool:remember', value: val });
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+                    </label>
+                  </div>
+
+                  {/* Ask before running code switch */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border mt-4">
+                    <div>
+                      <span className="text-xs font-semibold text-text">Ask before running code</span>
+                      <p className="text-[11px] text-muted">Require confirmation modal before executing sandbox code</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={toolRunAsk}
+                        onChange={async (e) => {
+                          const val = e.target.checked;
+                          setToolRunAsk(val);
+                          await db.meta.put({ key: 'toolRunAsk', value: val });
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : settingsTab === 'keys' ? (
             <>
               {/* Key Management Header & Add Key button */}
           <div className="flex items-center justify-between">

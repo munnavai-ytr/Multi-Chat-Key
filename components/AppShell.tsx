@@ -15,6 +15,7 @@ import { ModelPicker, ModelPickerTrigger } from './ModelPicker';
 import { ProjectPage } from './ProjectPage';
 import { ArtifactPanel } from './ArtifactPanel';
 import { requestPersistence } from '@/lib/storage';
+import { CodeConfirmModal } from './CodeConfirmModal';
 
 export function AppShell() {
   const { sidebarOpen, setSidebarOpen, activeView, setActiveView, toastMessage } = useUIStore();
@@ -223,6 +224,9 @@ export function AppShell() {
 
       {/* Searchable Model Picker (Bottom Sheet on Mobile, Modal on Desktop) */}
       <ModelPicker />
+
+      {/* Code Execution Confirmation Modal */}
+      <CodeConfirmModal />
     </div>
   );
 }
