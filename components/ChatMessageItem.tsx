@@ -542,6 +542,12 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
                 <GitBranch className="w-3.5 h-3.5" />
               </button>
             )}
+            
+            {message.usage && (
+              <span className="text-[10px] text-muted ml-2 px-1.5 py-0.5 rounded bg-surface2">
+                {message.usage.in + message.usage.out} tokens
+              </span>
+            )}
           </div>
         )}
       </div>

@@ -170,8 +170,9 @@ export async function* streamChat(o: {
   model: string;
   messages: Msg[];
   signal?: AbortSignal;
+  onUsage?: (u: { in: number; out: number }) => void;
 }): AsyncGenerator<string> {
-  const { provider, baseUrl, apiKey, model, messages, signal } = o;
+  const { provider, baseUrl, apiKey, model, messages, signal, onUsage } = o;
   const sys = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
   const chat = messages.filter((m) => m.role !== 'system');
   let path = '';
@@ -194,7 +195,12 @@ export async function* streamChat(o: {
     };
   } else {
     path = '/chat/completions';
-    body = { model, stream: true, messages: messages.map((m) => toOpenAI(m, provider)) };
+    body = { 
+      model, 
+      stream: true, 
+      messages: messages.map((m) => toOpenAI(m, provider)),
+      ...(provider !== 'custom' ? { stream_options: { include_usage: true } } : {}),
+    };
   }
 
   const res = await proxyFetch({ provider, baseUrl, apiKey, path, body, signal });
@@ -205,6 +211,8 @@ export async function* streamChat(o: {
     } catch {}
     throw new Error(friendlyError(res.status, t));
   }
+
+  let anthropicInputTokens = 0;
 
   for await (const d of sse(res)) {
     let j: any;
@@ -218,14 +226,26 @@ export async function* streamChat(o: {
       throw new Error('Provider error: ' + String(msg).slice(0, 200));
     }
     if (provider === 'anthropic') {
-      if (j.type === 'content_block_delta' && j.delta?.text) yield j.delta.text;
+      if (j.type === 'message_start') {
+        anthropicInputTokens = j.message?.usage?.input_tokens ?? 0;
+      } else if (j.type === 'message_delta') {
+        onUsage?.({ in: anthropicInputTokens, out: j.usage?.output_tokens ?? 0 });
+      } else if (j.type === 'content_block_delta' && j.delta?.text) {
+        yield j.delta.text;
+      }
     } else if (provider === 'gemini') {
+      if (j.usageMetadata) {
+        onUsage?.({ in: j.usageMetadata.promptTokenCount ?? 0, out: j.usageMetadata.candidatesTokenCount ?? 0 });
+      }
       const t = (j.candidates?.[0]?.content?.parts ?? [])
         .filter((p: any) => !p.thought)
         .map((p: any) => p.text || '')
         .join('');
       if (t) yield t;
     } else {
+      if (j.usage) {
+        onUsage?.({ in: j.usage.prompt_tokens ?? 0, out: j.usage.completion_tokens ?? 0 });
+      }
       const t = j.choices?.[0]?.delta?.content;
       if (t) yield t;
     }

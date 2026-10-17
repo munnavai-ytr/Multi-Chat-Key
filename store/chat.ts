@@ -290,6 +290,9 @@ async function runGeneration(chatId: string) {
       model: selectedModel,
       messages: streamMessages,
       signal: controller.signal,
+      onUsage: (u) => {
+        finalUsage = u;
+      },
     });
 
     for await (const chunk of stream) {
@@ -324,7 +327,14 @@ async function runGeneration(chatId: string) {
 
     // Write final content to Dexie and state when streaming ends
     const finalText = accumulatedTextBuffer;
-    await db.messages.update(assistantMsgId, { content: finalText });
+    let finalUsage: { in: number; out: number } | undefined;
+    
+    await db.messages.update(assistantMsgId, { 
+      content: finalText,
+      usage: finalUsage,
+      model: selectedModel,
+      provider: keyRow.provider,
+    });
     await db.chats.update(chatId, { updatedAt: Date.now() });
 
     useChatStore.setState((state) => ({
@@ -336,7 +346,7 @@ async function runGeneration(chatId: string) {
           }
         : {}),
       messages: state.messages.map((m) =>
-        m.id === assistantMsgId ? { ...m, content: finalText } : m
+        m.id === assistantMsgId ? { ...m, content: finalText, usage: finalUsage, model: selectedModel, provider: keyRow.provider } : m
       ),
     }));
 

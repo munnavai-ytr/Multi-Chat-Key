@@ -42,6 +42,9 @@ export interface MsgRow {
   error?: string;
   sources?: { title: string; url: string }[];
   searchNotice?: string;
+  usage?: { in: number; out: number };
+  model?: string;
+  provider?: string;
 }
 
 export interface FileRow {

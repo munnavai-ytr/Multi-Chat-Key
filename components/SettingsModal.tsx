@@ -470,6 +470,30 @@ export function SettingsModal() {
               {memories.length}/100
             </span>
           </button>
+          <button
+            type="button"
+            onClick={() => setSettingsTab('usage')}
+            className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
+              settingsTab === 'usage'
+                ? 'border-accent text-text'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            <RotateCw className="w-3.5 h-3.5" />
+            <span>Usage</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSettingsTab('data')}
+            className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
+              settingsTab === 'data'
+                ? 'border-accent text-text'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Data</span>
+          </button>
         </div>
 
         {/* Modal Body */}
@@ -1005,6 +1029,16 @@ export function SettingsModal() {
               </button>
             </div>
           </form>
+        </div>
+      ) : settingsTab === 'usage' ? (
+        <div className="space-y-4">
+          <p className="text-sm font-semibold text-text">Usage Tracking</p>
+          <p className="text-xs text-muted">Usage tracking is currently being implemented. Check back shortly.</p>
+        </div>
+      ) : settingsTab === 'data' ? (
+        <div className="space-y-4">
+          <p className="text-sm font-semibold text-text">Data Management</p>
+          <p className="text-xs text-muted">Data export/import is currently being implemented. Check back shortly.</p>
         </div>
       ) : (
         <div className="space-y-5">
