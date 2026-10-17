@@ -76,7 +76,9 @@ function CodeBlock({ children }: React.ComponentPropsWithoutRef<'pre'>) {
     setOutput(null);
     try {
       const { runCode } = await import('@/lib/runner');
-      const res = await runCode(langLower as any, rawCode);
+      const res = await runCode(langLower as any, rawCode, (status) => {
+        setOutput(status);
+      });
       setOutput(res.out || '(No output)');
     } catch (err: any) {
       setOutput('Error: ' + String(err));
