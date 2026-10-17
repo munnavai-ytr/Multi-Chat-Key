@@ -5,8 +5,8 @@ interface UIState {
   setSidebarOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   settingsOpen: boolean;
   setSettingsOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
-  settingsTab: 'keys' | 'search' | 'memory';
-  setSettingsTab: (tab: 'keys' | 'search' | 'memory') => void;
+  settingsTab: 'keys' | 'search' | 'memory' | 'usage' | 'data';
+  setSettingsTab: (tab: 'keys' | 'search' | 'memory' | 'usage' | 'data') => void;
   modelPickerOpen: boolean;
   setModelPickerOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   activeView: 'chat' | 'project';

@@ -26,6 +26,7 @@ import { ProviderId, detectProvider, listModels } from '@/lib/providers';
 import { encryptKey, decryptKey } from '@/lib/crypto';
 import { db, KeyRow, MemoryRow } from '@/lib/db';
 import { webSearch } from '@/lib/search';
+import { storageInfo, requestPersistence } from '@/lib/storage';
 
 const PROVIDER_OPTIONS: { id: ProviderId; name: string; prefixHint: string }[] = [
   { id: 'openai', name: 'OpenAI', prefixHint: 'sk-...' },
@@ -94,6 +95,30 @@ export function SettingsModal() {
   const [editingText, setEditingText] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
 
+  // Storage state
+  const [persisted, setPersisted] = useState(false);
+  const [storageUsage, setStorageUsage] = useState(0);
+  const [storageQuota, setStorageQuota] = useState(0);
+  const [isCheckingStorage, setIsCheckingStorage] = useState(false);
+
+  const formatBytes = (bytes: number) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  const refreshStorage = async () => {
+    setIsCheckingStorage(true);
+    await requestPersistence();
+    const info = await storageInfo();
+    setPersisted(info.persisted);
+    setStorageUsage(info.usage);
+    setStorageQuota(info.quota);
+    setIsCheckingStorage(false);
+  };
+
   const loadMemories = async () => {
     try {
       const memMeta = await db.meta.get('memoryEnabled');
@@ -139,6 +164,12 @@ export function SettingsModal() {
     }, 0);
     return () => clearTimeout(timer);
   }, [settingsOpen]);
+
+  useEffect(() => {
+    if (settingsOpen && settingsTab === 'data') {
+      refreshStorage();
+    }
+  }, [settingsOpen, settingsTab]);
 
   const handleTestSearch = async () => {
     setIsTestingSearch(true);
@@ -1037,8 +1068,37 @@ export function SettingsModal() {
         </div>
       ) : settingsTab === 'data' ? (
         <div className="space-y-4">
-          <p className="text-sm font-semibold text-text">Data Management</p>
-          <p className="text-xs text-muted">Data export/import is currently being implemented. Check back shortly.</p>
+          <div className="p-4 rounded-xl bg-surface2/60 border border-border space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full ${persisted ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                <h3 className="text-sm font-semibold text-text">
+                  Storage: {persisted ? 'Protected' : 'Not protected'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={refreshStorage}
+                disabled={isCheckingStorage}
+                className="px-2.5 py-1 rounded-lg bg-surface hover:bg-surface2 text-xs font-medium text-text border border-border transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <RotateCw className={`w-3 h-3 ${isCheckingStorage ? 'animate-spin' : ''}`} />
+                <span>Re-check</span>
+              </button>
+            </div>
+            
+            <p className="text-xs text-muted leading-relaxed">
+              {persisted
+                ? 'Your storage is protected from automatic browser cleanups.'
+                : 'Your browser may clear chats if the device runs low on space. Export a backup regularly.'}
+            </p>
+
+            <div className="text-xs font-mono text-muted pt-1 border-t border-border/60">
+              {formatBytes(storageUsage)} used of {formatBytes(storageQuota)}
+            </div>
+          </div>
+
+          <p className="text-xs text-muted">Data export/import and backup management.</p>
         </div>
       ) : (
         <div className="space-y-5">

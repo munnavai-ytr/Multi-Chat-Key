@@ -27,6 +27,7 @@ import {
   MAX_FILES_PER_MSG,
   ACCEPTED_EXTENSIONS,
 } from '@/lib/files';
+import { requestPersistence } from '@/lib/storage';
 
 export function ChatInput() {
   const [value, setValue] = useState('');
@@ -151,6 +152,7 @@ export function ChatInput() {
     setAttachments([]);
     resetTextareaHeight();
     sendMessage(textToSend, filesToSend);
+    requestPersistence().catch(() => {});
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

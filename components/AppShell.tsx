@@ -14,6 +14,7 @@ import { SettingsModal } from './SettingsModal';
 import { ModelPicker, ModelPickerTrigger } from './ModelPicker';
 import { ProjectPage } from './ProjectPage';
 import { ArtifactPanel } from './ArtifactPanel';
+import { requestPersistence } from '@/lib/storage';
 
 export function AppShell() {
   const { sidebarOpen, setSidebarOpen, activeView, setActiveView, toastMessage } = useUIStore();
@@ -35,6 +36,7 @@ export function AppShell() {
       // Silently re-validate keys older than 6 hours sequentially
       checkKeysHealth();
     });
+    requestPersistence().catch(() => {});
   }, [loadKeys, loadChats, loadProjects, checkKeysHealth]);
 
   // Global shortcuts: Ctrl/Cmd+K (search), Ctrl/Cmd+Shift+O (new chat)
