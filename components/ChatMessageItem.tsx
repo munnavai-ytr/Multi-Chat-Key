@@ -23,6 +23,7 @@ import {
   AppWindow,
 } from 'lucide-react';
 import { Markdown } from './Markdown';
+import { useUIStore } from '@/store/ui';
 
 function ToolChipsList({
   tools,
@@ -506,7 +507,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
               <button
                 key={art.id}
                 type="button"
-                onClick={() => useUIStore.getState().setArtifact(art)}
+                onClick={() => useUIStore.getState().setArtifact({ lang: art.type, code: art.code, title: art.title })}
                 className="flex items-center gap-2 px-3 py-2 rounded-xl bg-accent/10 border border-accent/30 text-xs font-semibold text-accent hover:bg-accent/20 transition-colors cursor-pointer"
               >
                 <AppWindow className="w-4 h-4" />

@@ -384,7 +384,7 @@ async function runGeneration(chatId: string) {
           },
           openArtifact: (artifact) => {
             accumulatedArtifacts.push(artifact);
-            useUIStore.setState({ artifact });
+            useUIStore.setState({ artifact: { lang: artifact.type, code: artifact.code, title: artifact.title } });
           },
         };
 
@@ -513,88 +513,6 @@ async function runGeneration(chatId: string) {
           useUIStore.getState().showToast('Memory updated', 2000);
         }
       } catch {}
-    })();
-  } catch (err: any) {
-    if (controller.signal.aborted) {
-      const stoppedText = accumulatedTextBuffer;
-      await db.messages.update(assistantMsgId, { content: stoppedText });
-      useChatStore.setState((state) => ({
-        ...(isCurrent()
-          ? {
-              streaming: false,
-              streamingMsgId: null,
-              abortController: null,
-            }
-          : {}),
-        messages: state.messages.map((m) =>
-          m.id === assistantMsgId ? { ...m, content: stoppedText } : m
-        ),
-      }));
-      return;
-    }
-
-    const errorMessage =
-      err instanceof Error ? err.message : 'An unexpected error occurred while generating response.';
-    const partialText = accumulatedTextBuffer;
-
-    await db.messages.update(assistantMsgId, {
-      content: partialText,
-      error: errorMessage,
-    });
-
-    useChatStore.setState((state) => ({
-      ...(isCurrent()
-        ? {
-            streaming: false,
-            streamingMsgId: null,
-            abortController: null,
-          }
-        : {}),
-      messages: state.messages.map((m) =>
-        m.id === assistantMsgId ? { ...m, content: partialText, error: errorMessage } : m
-      ),
-    }));
-  } finally {
-    if (isCurrent()) {
-      activeAbortController = null;
-    }
-  }
-}
-
-    // Non-blocking auto-title after first assistant reply finishes
-    const userMsg = useChatStore
-      .getState()
-      .messages.find((m) => m.role === 'user');
-    if (userMsg && finalText.trim()) {
-      maybeAutoTitle(chatId, userMsg.content, finalText).catch(() => {});
-    }
-
-    // Non-blocking memory extraction if enabled and not incognito
-    (async () => {
-      try {
-        const freshChat = await db.chats.get(chatId);
-        if (freshChat?.incognito) return;
-        const memoryMeta = await db.meta.get('memoryEnabled');
-        if (memoryMeta?.value === false) return;
-
-        const lastUser = [...useChatStore.getState().messages].reverse().find((m) => m.role === 'user');
-        if (!lastUser || !lastUser.content.trim()) return;
-
-        const count = await extractMemories({
-          provider: keyRow.provider as ProviderId,
-          baseUrl: keyRow.baseUrl,
-          apiKey: plainApiKey,
-          model: freshChat?.model || selectedModel,
-          userText: lastUser.content,
-          assistantText: finalText,
-        });
-
-        if (count > 0) {
-          useUIStore.getState().showToast('Memory updated', 2000);
-        }
-      } catch {
-        // swallow errors silently
-      }
     })();
   } catch (err: any) {
     if (controller.signal.aborted) {
