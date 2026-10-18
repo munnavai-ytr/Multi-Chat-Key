@@ -3,9 +3,7 @@
 import { useState, useEffect } from 'react';
 
 export function useOnline() {
-  const [isOnline, setIsOnline] = useState<boolean>(() => {
-    return typeof navigator !== 'undefined' ? navigator.onLine : true;
-  });
+  const [isOnline, setIsOnline] = useState<boolean>(true);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;

@@ -383,7 +383,7 @@ export function ProjectPage({ projectId }: ProjectPageProps) {
                     </p>
                     <p className="text-xs text-muted flex items-center gap-1 mt-0.5">
                       <Clock className="w-3 h-3" />
-                      <span>Updated {new Date(chat.updatedAt).toLocaleDateString()}</span>
+                      <span suppressHydrationWarning>Updated {new Date(chat.updatedAt).toLocaleDateString()}</span>
                     </p>
                   </div>
                 </div>
