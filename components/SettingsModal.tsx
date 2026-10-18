@@ -1490,8 +1490,7 @@ export function SettingsModal() {
                 Install App
               </button>
             </div>
-          )
-          }
+          )}
       ) : (
         <div className="space-y-5">
           {/* Master toggle */}
@@ -1664,9 +1663,6 @@ export function SettingsModal() {
                 </button>
               )}
             </div>
-          )}
-        </div>
-      )}
         </div>
       </div>
     </div>
