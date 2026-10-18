@@ -5,6 +5,15 @@ export const runtime = 'edge';
 const BLOCKED =
   /^(localhost|0\.0\.0\.0|\[.*\]|.*\.(local|internal)|127\.|10\.|192\.168\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|172\.(1[6-9]|2\d|3[01])\.)/i;
 
+export async function GET() {
+  return Response.json({
+    ok: true,
+    runtime: 'edge',
+    region: process.env.VERCEL_REGION ?? null,
+    time: new Date().toISOString(),
+  });
+}
+
 export async function POST(req: Request) {
   let payload: any;
   try {
@@ -40,7 +49,11 @@ export async function POST(req: Request) {
     return new Response('Bad path', { status: 400 });
   }
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const headers: Record<string, string> = {};
+  if (method !== 'GET') {
+    headers['Content-Type'] = 'application/json';
+  }
+
   if (provider === 'anthropic') {
     headers['x-api-key'] = apiKey;
     headers['anthropic-version'] = '2023-06-01';
@@ -50,13 +63,25 @@ export async function POST(req: Request) {
     headers['Authorization'] = 'Bearer ' + apiKey;
   }
 
-  const up = await fetch(base + path, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-    signal: req.signal,
-    redirect: 'error',
-  });
+  let up: Response;
+  try {
+    up = await fetch(base + path, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: req.signal,
+      redirect: 'manual',
+    });
+  } catch (e: any) {
+    return Response.json(
+      { error: 'upstream_fetch_failed', message: String(e?.message || e).slice(0, 200) },
+      { status: 502 }
+    );
+  }
+
+  if (up.status >= 300 && up.status < 400) {
+    return Response.json({ error: 'upstream_redirect', status: up.status }, { status: 502 });
+  }
 
   return new Response(up.body, {
     status: up.status,

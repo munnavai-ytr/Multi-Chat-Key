@@ -71,6 +71,8 @@ export function SettingsModal() {
   const [label, setLabel] = useState('');
   const [isValidating, setIsValidating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [canSaveAnyway, setCanSaveAnyway] = useState(false);
+  const [recheckErrors, setRecheckErrors] = useState<Record<string, string>>({});
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isAddFormOpen, setIsAddFormOpen] = useState(false);
   const [customInstructions, setCustomInstructions] = useState('');
@@ -193,7 +195,10 @@ export function SettingsModal() {
 
   useEffect(() => {
     if (settingsOpen && settingsTab === 'data') {
-      refreshStorage();
+      const timer = setTimeout(() => {
+        refreshStorage();
+      }, 0);
+      return () => clearTimeout(timer);
     }
   }, [settingsOpen, settingsTab]);
 
@@ -348,9 +353,79 @@ export function SettingsModal() {
     setRawKey(val);
     setErrorMsg(null);
     setSuccessMsg(null);
+    setCanSaveAnyway(false);
     const detected = detectProvider(val);
     if (detected) {
       setProvider(detected);
+    }
+  };
+
+  const handleSaveAnyway = async () => {
+    const cleanKey = rawKey.trim();
+    if (!cleanKey) return;
+
+    if (provider === 'custom' && !baseUrl.trim()) {
+      setErrorMsg('Please enter a Base URL for custom provider');
+      return;
+    }
+
+    setIsValidating(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    try {
+      const { iv, ct } = await encryptKey(cleanKey);
+      const keyId = crypto.randomUUID();
+      const last4 = cleanKey.length >= 4 ? cleanKey.slice(-4) : cleanKey;
+      const keyLabel =
+        label.trim() ||
+        `${PROVIDER_OPTIONS.find((p) => p.id === provider)?.name || provider} Key`;
+
+      const newKeyRow: KeyRow = {
+        id: keyId,
+        provider,
+        label: keyLabel,
+        baseUrl: provider === 'custom' ? baseUrl.trim() : undefined,
+        iv,
+        ct,
+        status: 'unknown',
+        checkedAt: Date.now(),
+        last4,
+      };
+
+      await addKey(newKeyRow, []);
+
+      setSuccessMsg('Key saved anyway (status: unknown, 0 models cached).');
+      setRawKey('');
+      setLabel('');
+      setBaseUrl('');
+      setCanSaveAnyway(false);
+      setIsAddFormOpen(false);
+    } catch {
+      setErrorMsg('Failed to save key.');
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleRecheckKey = async (keyId: string) => {
+    setRecheckErrors((prev) => {
+      const copy = { ...prev };
+      delete copy[keyId];
+      return copy;
+    });
+
+    const result = await recheckKey(keyId);
+    if (result.status === 'invalid') {
+      setRecheckErrors((prev) => ({
+        ...prev,
+        [keyId]: 'Invalid API key' + (result.detail ? ` (${result.detail})` : ''),
+      }));
+    } else if (result.status === 'unknown') {
+      setRecheckErrors((prev) => ({
+        ...prev,
+        [keyId]: `Could not verify this key (${result.detail || 'Network error'}).`,
+      }));
     }
   };
 
@@ -370,6 +445,7 @@ export function SettingsModal() {
     setIsValidating(true);
     setErrorMsg(null);
     setSuccessMsg(null);
+    setCanSaveAnyway(false);
 
     try {
       // Block saving the same key twice: decrypt existing keys of the same provider and compare
@@ -394,13 +470,15 @@ export function SettingsModal() {
       );
 
       if (result.status === 'invalid') {
-        setErrorMsg('Invalid API key. Please check your credentials and try again.');
+        setErrorMsg('Invalid API key');
+        setCanSaveAnyway(false);
         setIsValidating(false);
         return;
       }
 
       if (result.status === 'unknown') {
-        setErrorMsg('Could not verify this key. Check your connection and try again.');
+        setErrorMsg(`Could not verify this key (${result.detail || 'Network error'}).`);
+        setCanSaveAnyway(true);
         setIsValidating(false);
         return;
       }
@@ -435,9 +513,11 @@ export function SettingsModal() {
       setRawKey('');
       setLabel('');
       setBaseUrl('');
+      setCanSaveAnyway(false);
       setIsAddFormOpen(false);
-    } catch {
-      setErrorMsg('Failed to validate key. Check your connection or proxy.');
+    } catch (e: any) {
+      setErrorMsg(`Could not verify this key (${e?.message || 'Network error'}).`);
+      setCanSaveAnyway(true);
     } finally {
       setIsValidating(false);
     }
@@ -785,74 +865,100 @@ export function SettingsModal() {
                 return (
                   <div
                     key={key.id}
-                    className={`p-3.5 rounded-[14px] border transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                    className={`p-3.5 rounded-[14px] border transition-colors flex flex-col justify-between gap-2.5 ${
                       isSelected
                         ? 'border-accent bg-accent/5'
                         : 'border-border bg-surface hover:bg-surface2/50'
                     }`}
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-sm text-text truncate">
-                          {key.label}
-                        </span>
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-surface2 border border-border text-muted">
-                          {key.provider}
-                        </span>
-                        {isSelected && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent text-accent-fg">
-                            Active
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-sm text-text truncate">
+                            {key.label}
                           </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-2.5 mt-1 text-xs text-muted flex-wrap">
-                        <span className="font-mono text-muted tracking-widest text-[11px]">
-                          ••••••••{key.last4 || '••••'}
-                        </span>
-                        <span>•</span>
-                        <div className="flex items-center gap-1.5" title={statusTitle}>
-                          <span className={`w-2 h-2 rounded-full ${statusDotColor} shrink-0`} />
-                          <span className="capitalize">{key.status}</span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-surface2 border border-border text-muted">
+                            {key.provider}
+                          </span>
+                          {isSelected && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent text-accent-fg">
+                              Active
+                            </span>
+                          )}
                         </div>
-                        <span>•</span>
-                        <span>Checked {formatLastChecked(key.checkedAt)}</span>
-                      </div>
-                    </div>
 
-                    {/* Action buttons */}
-                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
-                      {!isSelected && (
+                        <div className="flex items-center gap-2.5 mt-1 text-xs text-muted flex-wrap">
+                          <span className="font-mono text-muted tracking-widest text-[11px]">
+                            ••••••••{key.last4 || '••••'}
+                          </span>
+                          <span>•</span>
+                          <div className="flex items-center gap-1.5" title={statusTitle}>
+                            <span className={`w-2 h-2 rounded-full ${statusDotColor} shrink-0`} />
+                            <span className="capitalize">{key.status}</span>
+                          </div>
+                          <span>•</span>
+                          <span>Checked {formatLastChecked(key.checkedAt)}</span>
+                        </div>
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                        {!isSelected && (
+                          <button
+                            type="button"
+                            onClick={() => selectKey(key.id)}
+                            className="px-2.5 py-1 rounded-lg text-xs font-medium text-text bg-surface2 hover:bg-border transition-colors"
+                          >
+                            Use
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => selectKey(key.id)}
-                          className="px-2.5 py-1 rounded-lg text-xs font-medium text-text bg-surface2 hover:bg-border transition-colors"
+                          onClick={() => handleRecheckKey(key.id)}
+                          disabled={isCheckingThis}
+                          title="Re-check key health and refresh models"
+                          aria-label="Re-check key"
+                          className="px-2.5 py-1 rounded-lg text-xs font-medium text-muted hover:text-text hover:bg-surface2 transition-colors disabled:opacity-50 flex items-center gap-1.5"
                         >
-                          Use
+                          <RotateCw
+                            className={`w-3.5 h-3.5 ${isCheckingThis ? 'animate-spin text-accent' : ''}`}
+                          />
+                          <span>Re-check</span>
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => recheckKey(key.id)}
-                        disabled={isCheckingThis}
-                        title="Re-check key health and refresh models"
-                        aria-label="Re-check key"
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-text hover:bg-surface2 transition-colors disabled:opacity-50"
-                      >
-                        <RotateCw
-                          className={`w-3.5 h-3.5 ${isCheckingThis ? 'animate-spin text-accent' : ''}`}
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteKey(key.id)}
-                        title="Delete key"
-                        aria-label="Delete key"
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteKey(key.id)}
+                          title="Delete key"
+                          aria-label="Delete key"
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
+
+                    {recheckErrors[key.id] && (
+                      <div className="w-full p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span className="break-words">{recheckErrors[key.id]}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRecheckErrors((prev) => {
+                              const next = { ...prev };
+                              delete next[key.id];
+                              return next;
+                            })
+                          }
+                          className="text-muted hover:text-text p-1 shrink-0"
+                          aria-label="Dismiss error"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -962,9 +1068,21 @@ export function SettingsModal() {
 
                 {/* Error message */}
                 {errorMsg && (
-                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{errorMsg}</span>
+                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <div className="flex items-start sm:items-center gap-2 min-w-0">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 sm:mt-0" />
+                      <span className="break-words">{errorMsg}</span>
+                    </div>
+                    {canSaveAnyway && (
+                      <button
+                        type="button"
+                        onClick={handleSaveAnyway}
+                        disabled={isValidating}
+                        className="px-3 py-1.5 rounded-lg bg-surface hover:bg-surface2 text-text font-medium border border-border transition-colors text-xs shrink-0 self-end sm:self-center cursor-pointer"
+                      >
+                        Save anyway
+                      </button>
+                    )}
                   </div>
                 )}
 

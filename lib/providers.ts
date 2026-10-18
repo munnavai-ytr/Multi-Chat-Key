@@ -65,14 +65,56 @@ export async function listModels(
   provider: ProviderId,
   apiKey: string,
   baseUrl?: string
-): Promise<{ status: KeyStatus; models: ModelInfo[] }> {
+): Promise<{ status: KeyStatus; models: ModelInfo[]; detail?: string }> {
   const path = provider === 'gemini' ? '/models?pageSize=1000' : provider === 'anthropic' ? '/models?limit=1000' : '/models';
 
-  const res = await proxyFetch({ provider, baseUrl, apiKey, path, method: 'GET' });
-  if (res.status === 401 || res.status === 403 || res.status === 400) return { status: 'invalid', models: [] };
-  if (res.status === 429) return { status: 'limited', models: [] };
-  if (!res.ok) return { status: 'unknown', models: [] };
-  const j = await res.json();
+  let res: Response;
+  try {
+    res = await proxyFetch({ provider, baseUrl, apiKey, path, method: 'GET' });
+  } catch (e: any) {
+    return {
+      status: 'unknown',
+      models: [],
+      detail: 'Network error: ' + (e?.message || String(e)),
+    };
+  }
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    const detail = `HTTP ${res.status}: ${t.slice(0, 160)}`;
+
+    if (res.status === 401) {
+      return { status: 'invalid', models: [], detail };
+    }
+    if (res.status === 429) {
+      return { status: 'limited', models: [], detail };
+    }
+    if (res.status === 403) {
+      if (/region|country|location|territory|not supported/i.test(t)) {
+        return { status: 'unknown', models: [], detail };
+      }
+      return { status: 'invalid', models: [], detail };
+    }
+    if (res.status === 400) {
+      if (/api.?key|API_KEY_INVALID|invalid|unauthorized|incorrect/i.test(t)) {
+        return { status: 'invalid', models: [], detail };
+      }
+      return { status: 'unknown', models: [], detail };
+    }
+    return { status: 'unknown', models: [], detail };
+  }
+
+  let j: any;
+  try {
+    j = await res.json();
+  } catch (e: any) {
+    return {
+      status: 'unknown',
+      models: [],
+      detail: 'JSON parse error: ' + (e?.message || String(e)),
+    };
+  }
+
   let models: ModelInfo[] = [];
 
   const NON_CHAT = /(embed|whisper|tts|dall-e|moderation|transcribe|realtime|audio|image|guard|davinci|babbage)/i;

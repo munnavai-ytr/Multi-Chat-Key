@@ -440,6 +440,6 @@ export function friendlyError(status: number, raw: string) {
   if (status === 401 || status === 403) return 'Your API key was rejected. Check it in Settings.';
   if (status === 429) return 'Rate limit or quota reached for this key. Try again later or switch key/model.';
   if (status === 404) return 'This model is not available for your key.';
-  if (status >= 500) return 'The provider is having problems. Try again shortly.';
+  if (status >= 500) return `The provider or proxy returned an error (${status}). ${raw.slice(0, 160)}`;
   return 'Request failed (' + status + '). ' + raw.slice(0, 200);
 }

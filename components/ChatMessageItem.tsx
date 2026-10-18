@@ -107,7 +107,10 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   const isSearchingWeb = useChatStore((s) => s.isSearchingWeb && s.streamingMsgId === message.id);
 
   useEffect(() => {
-    setEditText(message.content);
+    const timer = setTimeout(() => {
+      setEditText(message.content);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [message.content]);
 
   useEffect(() => {

@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
+import { ModelInfo, ModelKind } from '@/lib/providers';
 
 export function ModelPickerTrigger() {
   const { setModelPickerOpen, setSettingsOpen } = useUIStore();
@@ -58,7 +59,7 @@ export function ModelPickerTrigger() {
 }
 
 export function ModelPicker() {
-  const { modelPickerOpen, setModelPickerOpen, setSettingsOpen } = useUIStore();
+  const { modelPickerOpen, setModelPickerOpen, setSettingsOpen, showToast } = useUIStore();
   const {
     keys,
     selectedKeyId,
@@ -68,12 +69,16 @@ export function ModelPicker() {
     selectModel,
     recheckKey,
     recheckingKeyId,
+    addManualModel,
   } = useKeysStore();
 
   const [search, setSearch] = useState('');
+  const [kindFilter, setKindFilter] = useState<'all' | 'chat' | 'image' | 'audio' | 'embedding'>('chat');
   const [tierFilter, setTierFilter] = useState<'all' | 'free' | 'paid'>('all');
+  const [manualInput, setManualInput] = useState('');
+  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
 
-  // Group models by key with search and tier filter
+  // Group models by key with search, kind filter, and tier filter
   const groupedKeysWithModels = useMemo(() => {
     const q = search.toLowerCase().trim();
     return keys.map((key) => {
@@ -84,7 +89,14 @@ export function ModelPicker() {
           m.name.toLowerCase().includes(q) ||
           m.id.toLowerCase().includes(q);
         const matchesTier = tierFilter === 'all' || m.tier === tierFilter;
-        return matchesSearch && matchesTier;
+        const modelKind = m.kind || 'chat';
+        const matchesKind =
+          kindFilter === 'all'
+            ? true
+            : kindFilter === 'chat'
+              ? modelKind === 'chat'
+              : modelKind === kindFilter;
+        return matchesSearch && matchesTier && matchesKind;
       });
       return {
         key,
@@ -92,15 +104,19 @@ export function ModelPicker() {
         totalCount: allKeyModels.length,
       };
     });
-  }, [keys, cachedModels, search, tierFilter]);
+  }, [keys, cachedModels, search, tierFilter, kindFilter]);
 
   if (!modelPickerOpen) return null;
 
-  const handleSelect = async (keyId: string, modelId: string) => {
+  const handleSelect = async (keyId: string, model: ModelInfo) => {
+    if (model.kind && model.kind !== 'chat') {
+      showToast("This model type can't be used for chat yet");
+      return;
+    }
     if (keyId !== selectedKeyId) {
       await selectKey(keyId);
     }
-    await selectModel(modelId);
+    await selectModel(model.id);
     setModelPickerOpen(false);
   };
 
@@ -110,7 +126,22 @@ export function ModelPicker() {
     }
   };
 
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = manualInput.trim();
+    if (!clean || !selectedKeyId) return;
+    setIsSubmittingManual(true);
+    try {
+      await addManualModel(selectedKeyId, clean);
+      setManualInput('');
+      setModelPickerOpen(false);
+    } finally {
+      setIsSubmittingManual(false);
+    }
+  };
+
   const isRefreshing = !!(selectedKeyId && recheckingKeyId === selectedKeyId);
+  const activeKey = keys.find((k) => k.id === selectedKeyId);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -145,7 +176,7 @@ export function ModelPicker() {
         </div>
 
         {/* Search bar & Refresh */}
-        <div className="p-3 pb-2 border-b border-border space-y-2.5 shrink-0 bg-surface">
+        <div className="p-3 pb-2.5 border-b border-border space-y-2 shrink-0 bg-surface">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -169,20 +200,48 @@ export function ModelPicker() {
             </button>
           </div>
 
-          {/* Filter row: All / Free / Paid */}
-          <div className="flex items-center gap-1.5">
-            {(['all', 'free', 'paid'] as const).map((filter) => (
+          {/* Chip row 1: All kinds / Chat / Image / Audio / Embedding */}
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-0.5">
+            {[
+              { id: 'all', label: 'All kinds' },
+              { id: 'chat', label: 'Chat' },
+              { id: 'image', label: 'Image' },
+              { id: 'audio', label: 'Audio' },
+              { id: 'embedding', label: 'Embedding' },
+            ].map(({ id, label }) => (
               <button
-                key={filter}
+                key={id}
                 type="button"
-                onClick={() => setTierFilter(filter)}
-                className={`px-3 py-1 rounded-lg text-xs font-medium capitalize transition-colors cursor-pointer ${
-                  tierFilter === filter
+                onClick={() => setKindFilter(id as any)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
+                  kindFilter === id
                     ? 'bg-accent text-accent-fg'
                     : 'bg-surface2 hover:bg-border text-muted hover:text-text'
                 }`}
               >
-                {filter}
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Chip row 2: All / Free / Paid */}
+          <div className="flex items-center gap-1.5">
+            {[
+              { id: 'all', label: 'All' },
+              { id: 'free', label: 'Free' },
+              { id: 'paid', label: 'Paid' },
+            ].map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTierFilter(id as any)}
+                className={`px-3 py-0.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                  tierFilter === id
+                    ? 'bg-accent text-accent-fg'
+                    : 'bg-surface2 hover:bg-border text-muted hover:text-text'
+                }`}
+              >
+                {label}
               </button>
             ))}
           </div>
@@ -211,7 +270,7 @@ export function ModelPicker() {
           ) : (
             groupedKeysWithModels.map(({ key, models, totalCount }) => (
               <div key={key.id} className="space-y-1">
-                {/* Group Header by Provider / Key */}
+                {/* Group Header by Provider / Key with total count */}
                 <div className="flex items-center justify-between px-2 py-1 text-xs text-muted font-semibold uppercase tracking-wider">
                   <div className="flex items-center gap-1.5 truncate">
                     <span className="capitalize">{key.provider}</span>
@@ -219,36 +278,43 @@ export function ModelPicker() {
                       ({key.label})
                     </span>
                   </div>
-                  <span className="text-[10px] font-normal">{models.length}</span>
+                  <span className="text-[10px] font-normal">{totalCount} models</span>
                 </div>
 
                 {models.length === 0 ? (
                   <div className="px-3 py-3 text-xs text-muted bg-surface2/30 rounded-xl">
                     {totalCount === 0
-                      ? 'No models cached yet. Try refreshing.'
-                      : 'No models match filter.'}
+                      ? 'No models cached yet. Try refreshing or use a model ID manually below.'
+                      : 'No models match the selected filter.'}
                   </div>
                 ) : (
                   <div className="space-y-1">
                     {models.map((model) => {
                       const isSelected =
                         selectedKeyId === key.id && selectedModel === model.id;
+                      const isNonChat = model.kind && model.kind !== 'chat';
+
                       return (
                         <button
                           key={model.id}
                           type="button"
-                          onClick={() => handleSelect(key.id, model.id)}
+                          onClick={() => handleSelect(key.id, model)}
                           className={`w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-colors cursor-pointer ${
                             isSelected
                               ? 'bg-accent/10 border border-accent/30 text-accent font-medium'
                               : 'hover:bg-surface2 text-text border border-transparent'
-                          }`}
+                          } ${isNonChat ? 'opacity-55 hover:opacity-80' : ''}`}
                         >
                           <div className="min-w-0 flex-1 pr-2">
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="text-xs sm:text-sm font-medium truncate">
                                 {model.name}
                               </span>
+                              {isNonChat && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-surface2 text-muted border border-border shrink-0">
+                                  {model.kind}
+                                </span>
+                              )}
                               {model.tier === 'free' && (
                                 <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
                                   Free
@@ -279,10 +345,39 @@ export function ModelPicker() {
           )}
         </div>
 
+        {/* Use a model ID manually input */}
+        <div className="p-3 border-t border-border bg-surface2/30 space-y-2 shrink-0">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-text">Use a model ID manually</span>
+            {activeKey && (
+              <span className="text-[10px] text-muted truncate max-w-[150px]">
+                for {activeKey.label}
+              </span>
+            )}
+          </div>
+          <form onSubmit={handleManualSubmit} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={manualInput}
+              onChange={(e) => setManualInput(e.target.value)}
+              placeholder="e.g. gpt-4o, claude-3-7-sonnet..."
+              disabled={!selectedKeyId || isSubmittingManual}
+              className="flex-1 bg-surface border border-border rounded-xl px-3 py-1.5 text-xs text-text placeholder:text-muted focus:outline-none focus:border-accent font-mono transition-colors"
+            />
+            <button
+              type="submit"
+              disabled={!manualInput.trim() || !selectedKeyId || isSubmittingManual}
+              className="px-3.5 py-1.5 rounded-xl bg-accent text-accent-fg text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity cursor-pointer shrink-0"
+            >
+              Use
+            </button>
+          </form>
+        </div>
+
         {/* Footnote */}
         <div className="p-2.5 px-3 border-t border-border bg-surface shrink-0 text-center">
           <p className="text-[11px] text-muted leading-tight">
-            Free/Paid is an estimate. Gemini and Groq free tiers have rate limits. Check your provider&apos;s pricing page.
+            Free/Paid is an estimate. OpenAI and Anthropic APIs are billed per use (prepaid credits); free API credits for new accounts are not reliable, check your billing page.
           </p>
         </div>
       </div>

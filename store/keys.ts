@@ -15,7 +15,7 @@ interface KeysState {
   selectModel: (modelId: string) => Promise<void>;
   addKey: (keyData: KeyRow, models: ModelInfo[]) => Promise<void>;
   deleteKey: (keyId: string) => Promise<void>;
-  recheckKey: (keyId: string) => Promise<{ status: KeyStatus; models: ModelInfo[] }>;
+  recheckKey: (keyId: string) => Promise<{ status: KeyStatus; models: ModelInfo[]; detail?: string }>;
   refreshModelsForSelectedKey: () => Promise<void>;
   checkKeysHealth: () => Promise<void>;
 }
@@ -175,7 +175,7 @@ export const useKeysStore = create<KeysState>((set, get) => ({
 
   recheckKey: async (keyId: string) => {
     const key = get().keys.find((k) => k.id === keyId);
-    if (!key) return { status: 'unknown' as KeyStatus, models: [] };
+    if (!key) return { status: 'unknown' as KeyStatus, models: [], detail: 'Key not found' };
 
     set({ recheckingKeyId: keyId });
     try {
@@ -213,9 +213,9 @@ export const useKeysStore = create<KeysState>((set, get) => ({
       });
 
       return result;
-    } catch {
+    } catch (e: any) {
       set({ recheckingKeyId: null });
-      return { status: 'unknown' as KeyStatus, models: [] };
+      return { status: 'unknown' as KeyStatus, models: [], detail: 'Validation failed: ' + (e?.message || String(e)) };
     }
   },
 
