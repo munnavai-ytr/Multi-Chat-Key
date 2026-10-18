@@ -3,24 +3,18 @@
 import { useState, useEffect } from 'react';
 
 export function useOnline() {
-  const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [online, setOnline] = useState(true);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    setIsOnline(navigator.onLine);
-
+    const update = () => setOnline(navigator.onLine);
+    update();
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
     return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
     };
   }, []);
 
-  return isOnline;
+  return online;
 }
