@@ -5,12 +5,14 @@
   "scripts": {
     "dev": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
+    "build:android": "BUILD_TARGET=android NEXT_PUBLIC_DIRECT=1 next build",
     "start": "next start",
     "lint": "eslint .",
     "clean": "next clean"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
+    "@capacitor/app": "^8.1.2",
     "@capacitor/cli": "^8.5.3",
     "@capacitor/core": "^8.5.3",
     "@google/genai": "^2.4.0",

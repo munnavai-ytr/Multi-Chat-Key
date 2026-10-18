@@ -1,3 +1,5 @@
+import { isDirect, directSearch } from './transport';
+
 export interface SearchHit {
   title: string;
   url: string;
@@ -9,6 +11,15 @@ export async function webSearch(
   query: string,
   signal?: AbortSignal
 ): Promise<SearchHit[]> {
+  if (isDirect()) {
+    const j = await directSearch(apiKey, query, signal);
+    return (j.results ?? []).map((r: any) => ({
+      title: r.title,
+      url: r.url,
+      content: String(r.content ?? '').slice(0, 800),
+    }));
+  }
+
   const res = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

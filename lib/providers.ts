@@ -36,18 +36,9 @@ export interface ModelInfo {
   kind?: ModelKind;
 }
 
-export const BASES: Record<string, string> = {
-  openai: 'https://api.openai.com/v1',
-  anthropic: 'https://api.anthropic.com/v1',
-  gemini: 'https://generativelanguage.googleapis.com/v1beta',
-  groq: 'https://api.groq.com/openai/v1',
-  openrouter: 'https://openrouter.ai/api/v1',
-  mistral: 'https://api.mistral.ai/v1',
-  deepseek: 'https://api.deepseek.com',
-  xai: 'https://api.x.ai/v1',
-  together: 'https://api.together.xyz/v1',
-  cerebras: 'https://api.cerebras.ai/v1',
-};
+import { isDirect, directFetch } from './transport';
+
+export { BASES } from './provider-http';
 
 export function detectProvider(key: string): ProviderId | null {
   const k = key.trim();
@@ -71,7 +62,9 @@ export async function proxyFetch(p: {
   method?: string;
   body?: any;
   signal?: AbortSignal;
+  stream?: boolean;
 }) {
+  if (isDirect()) return directFetch(p);
   return fetch('/api/proxy', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

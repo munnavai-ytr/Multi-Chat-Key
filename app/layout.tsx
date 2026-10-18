@@ -46,7 +46,7 @@ export default function RootLayout({
           {children}
           <Script id="register-sw" strategy="afterInteractive">
             {`
-              if (location.protocol === 'https:' && 'serviceWorker' in navigator) {
+              if (location.protocol === 'https:' && location.hostname !== 'localhost' && 'serviceWorker' in navigator) {
                 window.addEventListener('load', () => {
                   navigator.serviceWorker.register('/sw.js');
                 });

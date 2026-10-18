@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Menu, Folder, Ghost, Sparkles } from 'lucide-react';
+import { Menu, Folder, Ghost, Sparkles, WifiOff } from 'lucide-react';
+import { App } from '@capacitor/app';
+import { isNative } from '@/lib/transport';
+import { useOnline } from '@/hooks/use-online';
 import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
 import { useChatStore } from '@/store/chat';
@@ -18,7 +21,9 @@ import { requestPersistence } from '@/lib/storage';
 import { CodeConfirmModal } from './CodeConfirmModal';
 
 export function AppShell() {
-  const { sidebarOpen, setSidebarOpen, activeView, setActiveView, toastMessage } = useUIStore();
+  const isOnline = useOnline();
+  const { sidebarOpen, setSidebarOpen, activeView, setActiveView, toastMessage, toastAction } =
+    useUIStore();
   const { loadKeys, checkKeysHealth } = useKeysStore();
   const {
     loadChats,
@@ -61,6 +66,75 @@ export function AppShell() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Android back button handling (native only)
+  useEffect(() => {
+    if (!isNative()) return;
+
+    let cleanup: (() => void) | undefined;
+    App.addListener('backButton', ({ canGoBack }) => {
+      const {
+        settingsOpen,
+        setSettingsOpen,
+        modelPickerOpen,
+        setModelPickerOpen,
+        codeConfirmModal,
+        setCodeConfirmModal,
+        artifact,
+        setArtifact,
+        activeView,
+        setActiveView,
+        sidebarOpen,
+        setSidebarOpen,
+      } = useUIStore.getState();
+
+      // 1. Modals
+      if (settingsOpen) {
+        setSettingsOpen(false);
+        return;
+      }
+      if (modelPickerOpen) {
+        setModelPickerOpen(false);
+        return;
+      }
+      if (codeConfirmModal) {
+        codeConfirmModal.resolve(false);
+        setCodeConfirmModal(null);
+        return;
+      }
+
+      // 2. Artifact panel
+      if (artifact) {
+        setArtifact(null);
+        return;
+      }
+
+      // 3. Workspace panel
+      if (activeView === 'project') {
+        setActiveView('chat');
+        return;
+      }
+
+      // 4. Sidebar drawer
+      if (sidebarOpen) {
+        setSidebarOpen(false);
+        return;
+      }
+
+      // 5. If none is open and canGoBack is false
+      if (!canGoBack) {
+        App.exitApp();
+      } else {
+        window.history.back();
+      }
+    }).then((handle) => {
+      cleanup = () => handle.remove();
+    });
+
+    return () => {
+      if (cleanup) cleanup();
+    };
   }, []);
 
   const currentChat = chats.find((c) => c.id === activeChatId);
@@ -164,6 +238,14 @@ export function AppShell() {
           </div>
         </header>
 
+        {/* Offline Banner */}
+        {!isOnline && (
+          <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 flex items-center justify-center gap-1.5 text-xs text-amber-700 dark:text-amber-300 font-medium shrink-0 animate-in fade-in duration-150">
+            <WifiOff className="w-3.5 h-3.5 shrink-0" />
+            <span>You&apos;re offline. You can read chats and memories; AI replies need internet.</span>
+          </div>
+        )}
+
         {/* Incognito Notice Banner if active */}
         {isIncognito && (
           <div className="bg-purple-500/10 border-b border-purple-500/20 px-4 py-1.5 flex items-center justify-center gap-1.5 text-xs text-purple-600 dark:text-purple-400 shrink-0">
@@ -216,6 +298,15 @@ export function AppShell() {
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-3.5 py-1.5 rounded-full bg-surface2/95 border border-border text-xs font-medium text-text shadow-xl backdrop-blur-md flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
           <Sparkles className="w-3.5 h-3.5 text-accent" />
           <span>{toastMessage}</span>
+          {toastAction && (
+            <button
+              type="button"
+              onClick={toastAction.onClick}
+              className="ml-1 px-2.5 py-0.5 rounded-full bg-accent text-accent-fg font-semibold hover:opacity-90 transition-opacity cursor-pointer text-xs"
+            >
+              {toastAction.label}
+            </button>
+          )}
         </div>
       )}
 

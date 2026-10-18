@@ -19,6 +19,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { useChatStore } from '@/store/chat';
 import { useKeysStore } from '@/store/keys';
 import { useUIStore } from '@/store/ui';
+import { useOnline } from '@/hooks/use-online';
 import {
   ProcessedFile,
   processFile,
@@ -55,7 +56,9 @@ export function ChatInput() {
     toggleChatArtifacts,
   } = useChatStore();
   const { keys, selectedKeyId, selectedModel } = useKeysStore();
-  const { setSettingsOpen, setSettingsTab } = useUIStore();
+  const { setSettingsOpen, setSettingsTab, showToast } = useUIStore();
+  const isOnline = useOnline();
+  const prevOnlineRef = useRef(isOnline);
 
   const currentChat = chats.find((c) => c.id === activeChatId);
   const isArtifactsOn = currentChat ? Boolean(currentChat.artifactsEnabled) : draftArtifacts;
@@ -146,6 +149,10 @@ export function ChatInput() {
 
   const handleSend = () => {
     if (!canSend) return;
+    if (!isOnline) {
+      showToast('Offline: nothing was sent', 3000);
+      return;
+    }
     const textToSend = value;
     const filesToSend = [...attachments];
     setValue('');
@@ -154,6 +161,25 @@ export function ChatInput() {
     sendMessage(textToSend, filesToSend);
     requestPersistence().catch(() => {});
   };
+
+  useEffect(() => {
+    if (!prevOnlineRef.current && isOnline && value.trim()) {
+      showToast('Back online', 6000, {
+        label: 'Send now',
+        onClick: () => {
+          if (!value.trim()) return;
+          const textToSend = value;
+          const filesToSend = [...attachments];
+          setValue('');
+          setAttachments([]);
+          resetTextareaHeight();
+          sendMessage(textToSend, filesToSend);
+          requestPersistence().catch(() => {});
+        },
+      });
+    }
+    prevOnlineRef.current = isOnline;
+  }, [isOnline, value, attachments, showToast, sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768;

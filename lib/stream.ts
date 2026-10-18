@@ -303,7 +303,7 @@ export async function* streamChat(o: {
     };
   }
 
-  const res = await proxyFetch({ provider, baseUrl, apiKey, path, body, signal });
+  const res = await proxyFetch({ provider, baseUrl, apiKey, path, body, signal, stream: true });
   if (!res.ok) {
     let t = '';
     try {

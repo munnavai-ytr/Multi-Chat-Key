@@ -1,9 +1,6 @@
-import { BASES } from '@/lib/providers';
+import { buildUpstream } from '@/lib/provider-http';
 
 export const runtime = 'edge';
-
-const BLOCKED =
-  /^(localhost|0\.0\.0\.0|\[.*\]|.*\.(local|internal)|127\.|10\.|192\.168\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|172\.(1[6-9]|2\d|3[01])\.)/i;
 
 export async function GET() {
   return Response.json({
@@ -24,48 +21,26 @@ export async function POST(req: Request) {
 
   const { provider, baseUrl, apiKey, path, method = 'POST', body } = payload;
 
-  if (!(provider in BASES) && provider !== 'custom') {
-    return new Response('Unknown provider', { status: 400 });
-  }
-
   if (typeof apiKey !== 'string' || !apiKey) {
     return new Response('Missing key', { status: 400 });
   }
 
-  let base = BASES[provider];
-  if (!base) {
-    try {
-      const u = new URL(baseUrl);
-      if (u.protocol !== 'https:' || BLOCKED.test(u.hostname)) {
-        return new Response('Blocked base URL', { status: 400 });
-      }
-      base = baseUrl.replace(/\/$/, '');
-    } catch {
-      return new Response('Bad base URL', { status: 400 });
+  let url: string;
+  let headers: Record<string, string>;
+  try {
+    const upstream = buildUpstream(provider, baseUrl, apiKey, path);
+    url = upstream.url;
+    headers = upstream.headers;
+    if (method === 'GET') {
+      delete headers['Content-Type'];
     }
-  }
-
-  if (typeof path !== 'string' || !path.startsWith('/')) {
-    return new Response('Bad path', { status: 400 });
-  }
-
-  const headers: Record<string, string> = {};
-  if (method !== 'GET') {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  if (provider === 'anthropic') {
-    headers['x-api-key'] = apiKey;
-    headers['anthropic-version'] = '2023-06-01';
-  } else if (provider === 'gemini') {
-    headers['x-goog-api-key'] = apiKey;
-  } else {
-    headers['Authorization'] = 'Bearer ' + apiKey;
+  } catch (err: any) {
+    return new Response(err?.message || 'Bad request', { status: 400 });
   }
 
   let up: Response;
   try {
-    up = await fetch(base + path, {
+    up = await fetch(url, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,

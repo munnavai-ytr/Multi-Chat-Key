@@ -533,8 +533,20 @@ async function runGeneration(chatId: string) {
       return;
     }
 
-    const errorMessage =
-      err instanceof Error ? err.message : 'An unexpected error occurred while generating response.';
+    const isNetworkError =
+      err instanceof TypeError ||
+      (err instanceof Error &&
+        (err.name === 'TypeError' ||
+          err.message === 'Failed to fetch' ||
+          err.message?.toLowerCase().includes('networkerror') ||
+          err.message?.toLowerCase().includes('failed to fetch'))) ||
+      (typeof navigator !== 'undefined' && !navigator.onLine);
+
+    const errorMessage = isNetworkError
+      ? 'No internet connection. Check your network and tap Retry.'
+      : err instanceof Error
+        ? err.message
+        : 'An unexpected error occurred while generating response.';
     const partialText = accumulatedTextBuffer;
 
     await db.messages.update(assistantMsgId, {

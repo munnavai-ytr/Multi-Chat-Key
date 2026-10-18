@@ -562,7 +562,13 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
           <div className="mt-2.5 p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-600 dark:text-rose-400 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="flex items-start gap-2 min-w-0">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span className="break-words">{message.error}</span>
+              <span className="break-words">
+                {message.error.toLowerCase().includes('typeerror') ||
+                message.error.toLowerCase().includes('failed to fetch') ||
+                message.error.toLowerCase().includes('networkerror')
+                  ? 'No internet connection. Check your network and tap Retry.'
+                  : message.error}
+              </span>
             </div>
             <button
               type="button"

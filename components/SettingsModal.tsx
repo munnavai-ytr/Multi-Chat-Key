@@ -19,6 +19,7 @@ import {
   Check,
   Globe,
   Search,
+  Sliders,
 } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
@@ -183,6 +184,31 @@ export function SettingsModal() {
     }
   };
 
+  const [proxyUrlInput, setProxyUrlInput] = useState('');
+  const [proxySaved, setProxySaved] = useState(false);
+
+  const loadProxyUrl = async () => {
+    try {
+      const row = await db.meta.get('proxyUrl');
+      if (row && typeof row.value === 'string') {
+        setProxyUrlInput(row.value);
+      }
+    } catch {}
+  };
+
+  const handleSaveProxyUrl = async () => {
+    try {
+      const trimmed = proxyUrlInput.trim();
+      if (!trimmed) {
+        await db.meta.delete('proxyUrl');
+      } else {
+        await db.meta.put({ key: 'proxyUrl', value: trimmed });
+      }
+      setProxySaved(true);
+      setTimeout(() => setProxySaved(false), 2000);
+    } catch {}
+  };
+
   useEffect(() => {
     if (!settingsOpen) return;
     const timer = setTimeout(() => {
@@ -194,6 +220,7 @@ export function SettingsModal() {
       loadMemories();
       loadSearchKeyInfo();
       loadToolSettings();
+      loadProxyUrl();
     }, 0);
     return () => clearTimeout(timer);
   }, [settingsOpen]);
@@ -657,6 +684,18 @@ export function SettingsModal() {
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>Data</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSettingsTab('advanced')}
+            className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
+              settingsTab === 'advanced'
+                ? 'border-accent text-text'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            <span>Advanced</span>
           </button>
         </div>
 
@@ -1665,6 +1704,38 @@ export function SettingsModal() {
               )}
             </div>
           )}
+        </div>
+      ) : settingsTab === 'advanced' ? (
+        <div className="space-y-4">
+          <div className="p-4 rounded-xl bg-surface2/60 border border-border space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold text-text">Fallback Proxy URL</h3>
+              <p className="text-xs text-muted mt-1 leading-relaxed">
+                Only needed if a provider blocks direct calls from the app. Use your deployed web app URL.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <input
+                type="url"
+                value={proxyUrlInput}
+                onChange={(e) => setProxyUrlInput(e.target.value)}
+                placeholder="https://your-chatly-app.vercel.app"
+                className="w-full bg-surface border border-border rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent font-mono transition-colors"
+              />
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-xs text-muted">
+                  {proxySaved ? 'Saved!' : 'Leave blank for direct device-to-provider calls.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSaveProxyUrl}
+                  className="px-4 py-2 rounded-xl bg-accent text-accent-fg text-xs font-semibold hover:opacity-95 transition-opacity cursor-pointer"
+                >
+                  Save Proxy URL
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
         </div>

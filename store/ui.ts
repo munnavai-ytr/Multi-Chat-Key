@@ -1,12 +1,19 @@
 import { create } from 'zustand';
 
+export type SettingsTabId = 'keys' | 'search' | 'memory' | 'usage' | 'data' | 'tools' | 'advanced';
+
+interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface UIState {
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   settingsOpen: boolean;
   setSettingsOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
-  settingsTab: 'keys' | 'search' | 'memory' | 'usage' | 'data' | 'tools';
-  setSettingsTab: (tab: 'keys' | 'search' | 'memory' | 'usage' | 'data' | 'tools') => void;
+  settingsTab: SettingsTabId;
+  setSettingsTab: (tab: SettingsTabId) => void;
   modelPickerOpen: boolean;
   setModelPickerOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
   activeView: 'chat' | 'project';
@@ -14,7 +21,8 @@ interface UIState {
   artifact: { lang: string; code: string; title?: string } | null;
   setArtifact: (artifact: { lang: string; code: string; title?: string } | null) => void;
   toastMessage: string | null;
-  showToast: (msg: string, duration?: number) => void;
+  toastAction: ToastAction | null;
+  showToast: (msg: string, duration?: number, action?: ToastAction) => void;
   codeConfirmModal: { lang: string; code: string; resolve: (ok: boolean) => void } | null;
   setCodeConfirmModal: (modal: { lang: string; code: string; resolve: (ok: boolean) => void } | null) => void;
 }
@@ -44,11 +52,14 @@ export const useUIStore = create<UIState>((set) => ({
   artifact: null,
   setArtifact: (artifact) => set({ artifact }),
   toastMessage: null,
-  showToast: (msg, duration = 2000) => {
+  toastAction: null,
+  showToast: (msg, duration = 2000, action) => {
     if (toastTimer) clearTimeout(toastTimer);
-    set({ toastMessage: msg });
+    set({ toastMessage: msg, toastAction: action ?? null });
     toastTimer = setTimeout(() => {
-      set((state) => (state.toastMessage === msg ? { toastMessage: null } : state));
+      set((state) =>
+        state.toastMessage === msg ? { toastMessage: null, toastAction: null } : state
+      );
     }, duration);
   },
   codeConfirmModal: null,
