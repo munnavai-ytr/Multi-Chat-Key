@@ -298,7 +298,7 @@ export async function* streamChat(o: {
         ...(sys ? [{ role: 'system', content: sys }] : []),
         ...chat.map((m) => toOpenAIA(m, provider)),
       ],
-      ...(provider !== 'custom' ? { stream_options: { include_usage: true } } : {}),
+      ...(provider === 'openai' || provider === 'openrouter' ? { stream_options: { include_usage: true } } : {}),
       ...(tools.length > 0 ? { tools: toOpenAITools(tools) } : {}),
     };
   }

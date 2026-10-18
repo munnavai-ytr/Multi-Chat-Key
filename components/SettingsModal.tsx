@@ -685,7 +685,7 @@ export function SettingsModal() {
                   </label>
                 </div>
                 <p className="text-xs text-muted leading-relaxed">
-                  The AI decides when to use these. You can also just ask: &apos;search the web for...&apos;, &apos;make a landing page&apos;, &apos;calculate...&apos;.
+                  The AI decides when to use these. You can also just ask: &apos;search the web for ""&apos;, &apos;make a landing page&apos;, &apos;calculate ""&apos;.
                 </p>
               </div>
 
@@ -1122,7 +1122,7 @@ export function SettingsModal() {
                     {isValidating ? (
                       <>
                         <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Validating Key...</span>
+                        <span>Validating Key ""</span>
                       </>
                     ) : (
                       <span>Save Key</span>
@@ -1258,7 +1258,7 @@ export function SettingsModal() {
                   {isTestingSearch ? (
                     <>
                       <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Testing...</span>
+                      <span>Testing ""</span>
                     </>
                   ) : (
                     <>
@@ -1295,8 +1295,8 @@ export function SettingsModal() {
                   }}
                   placeholder={
                     hasSavedSearchKey
-                      ? 'Paste new Tavily key to replace (tvly-...)'
-                      : 'Paste your Tavily API key (tvly-...)'
+                      ? 'Paste new Tavily key to replace (tvly- "")'
+                      : 'Paste your Tavily API key (tvly- "")'
                   }
                   className="w-full bg-surface border border-border rounded-xl px-3.5 py-2.5 pr-10 text-xs sm:text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent font-mono transition-colors"
                   autoComplete="off"
@@ -1352,7 +1352,7 @@ export function SettingsModal() {
                   {isTestingSearch ? (
                     <>
                       <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Testing...</span>
+                      <span>Testing ""</span>
                     </>
                   ) : (
                     <>
@@ -1371,7 +1371,7 @@ export function SettingsModal() {
                 {isSavingSearch ? (
                   <>
                     <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Saving...</span>
+                    <span>Saving ""</span>
                   </>
                 ) : (
                   <span>Save Search Key</span>
@@ -1491,7 +1491,8 @@ export function SettingsModal() {
               </button>
             </div>
           )}
-      ) : (
+        </div>
+      ) : settingsTab === 'memory' ? (
         <div className="space-y-5">
           {/* Master toggle */}
           <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/60 border border-border">
@@ -1663,6 +1664,9 @@ export function SettingsModal() {
                 </button>
               )}
             </div>
+          )}
+        </div>
+      ) : null}
         </div>
       </div>
     </div>
