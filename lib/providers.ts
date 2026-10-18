@@ -1,9 +1,39 @@
-export type ProviderId = 'openai' | 'anthropic' | 'gemini' | 'groq' | 'openrouter' | 'custom';
+export type ProviderId =
+  | 'openai'
+  | 'anthropic'
+  | 'gemini'
+  | 'groq'
+  | 'openrouter'
+  | 'mistral'
+  | 'deepseek'
+  | 'xai'
+  | 'together'
+  | 'cerebras'
+  | 'custom';
+
+export type ModelKind = 'chat' | 'image' | 'audio' | 'embedding' | 'moderation' | 'other';
+
+export function kindFor(id: string, methods?: string[]): ModelKind {
+  const s = id.toLowerCase();
+  if (methods?.length) {
+    if (methods.includes('embedContent') || methods.includes('embedText')) return 'embedding';
+    if (methods.includes('predict') || methods.includes('predictLongRunning')) return 'image';
+    if (methods.includes('generateContent'))
+      return /tts|audio|native-audio/.test(s) ? 'audio' : /image|imagen/.test(s) ? 'image' : 'chat';
+    return 'other';
+  }
+  if (/embed/.test(s)) return 'embedding';
+  if (/moderation|guard/.test(s)) return 'moderation';
+  if (/whisper|transcribe|tts|audio|realtime|speech/.test(s)) return 'audio';
+  if (/dall-e|gpt-image|image|imagen|sora|flux|stable-diffusion|sdxl/.test(s)) return 'image';
+  return 'chat';
+}
 
 export interface ModelInfo {
   id: string;
   name: string;
   tier?: 'free' | 'paid' | 'unknown';
+  kind?: ModelKind;
 }
 
 export const BASES: Record<string, string> = {
@@ -12,6 +42,11 @@ export const BASES: Record<string, string> = {
   gemini: 'https://generativelanguage.googleapis.com/v1beta',
   groq: 'https://api.groq.com/openai/v1',
   openrouter: 'https://openrouter.ai/api/v1',
+  mistral: 'https://api.mistral.ai/v1',
+  deepseek: 'https://api.deepseek.com',
+  xai: 'https://api.x.ai/v1',
+  together: 'https://api.together.xyz/v1',
+  cerebras: 'https://api.cerebras.ai/v1',
 };
 
 export function detectProvider(key: string): ProviderId | null {
@@ -20,6 +55,8 @@ export function detectProvider(key: string): ProviderId | null {
   if (k.startsWith('AIza')) return 'gemini';
   if (k.startsWith('gsk_')) return 'groq';
   if (k.startsWith('sk-or-')) return 'openrouter';
+  if (k.startsWith('xai-')) return 'xai';
+  if (k.startsWith('csk-')) return 'cerebras';
   if (k.startsWith('sk-')) return 'openai';
   return null;
 }
@@ -53,11 +90,18 @@ export function tierFor(
     if (pricing && Number(pricing.prompt) === 0 && Number(pricing.completion) === 0) return 'free';
     return 'paid';
   }
-  if (provider === 'groq') return 'free';
+  if (provider === 'groq' || provider === 'cerebras') return 'free';
   if (provider === 'gemini') {
     return /(flash|flash-lite|gemma)/i.test(id) && !/(pro|image|veo|imagen)/i.test(id) ? 'free' : 'paid';
   }
-  if (provider === 'openai' || provider === 'anthropic') return 'paid';
+  if (
+    provider === 'openai' ||
+    provider === 'anthropic' ||
+    provider === 'deepseek' ||
+    provider === 'xai'
+  ) {
+    return 'paid';
+  }
   return 'unknown';
 }
 
@@ -66,7 +110,12 @@ export async function listModels(
   apiKey: string,
   baseUrl?: string
 ): Promise<{ status: KeyStatus; models: ModelInfo[]; detail?: string }> {
-  const path = provider === 'gemini' ? '/models?pageSize=1000' : provider === 'anthropic' ? '/models?limit=1000' : '/models';
+  const path =
+    provider === 'gemini'
+      ? '/models?pageSize=1000'
+      : provider === 'anthropic'
+        ? '/models?limit=1000'
+        : '/models';
 
   let res: Response;
   try {
@@ -117,40 +166,102 @@ export async function listModels(
 
   let models: ModelInfo[] = [];
 
-  const NON_CHAT = /(embed|whisper|tts|dall-e|moderation|transcribe|realtime|audio|image|guard|davinci|babbage)/i;
-
   if (provider === 'gemini') {
-    models = (j.models || [])
-      .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
-      .map((m: any) => {
-        const id = m.name.replace('models/', '');
-        return {
-          id,
-          name: m.displayName || m.name,
-          tier: tierFor(provider, id),
-        };
-      });
+    let allGeminiModels: any[] = [];
+    if (Array.isArray(j.models)) {
+      allGeminiModels.push(...j.models);
+    }
+    let pageToken: string | undefined = j.nextPageToken;
+
+    while (pageToken) {
+      const p = `/models?pageSize=1000&pageToken=${encodeURIComponent(pageToken)}`;
+      try {
+        const nextRes = await proxyFetch({ provider, baseUrl, apiKey, path: p, method: 'GET' });
+        if (!nextRes.ok) break;
+        const nextJson = await nextRes.json().catch(() => null);
+        if (!nextJson) break;
+        if (Array.isArray(nextJson.models)) {
+          allGeminiModels.push(...nextJson.models);
+        }
+        pageToken = nextJson.nextPageToken;
+      } catch {
+        break;
+      }
+    }
+
+    models = allGeminiModels.map((m: any) => {
+      const id = m.name.replace(/^models\//, '');
+      return {
+        id,
+        name: m.displayName || m.name,
+        tier: tierFor(provider, id),
+        kind: kindFor(id, m.supportedGenerationMethods),
+      };
+    });
   } else if (provider === 'anthropic') {
-    models = (j.data || []).map((m: any) => ({
+    let allAnthropicModels: any[] = [];
+    if (Array.isArray(j.data)) {
+      allAnthropicModels.push(...j.data);
+    }
+    let hasMore = Boolean(j.has_more);
+    let afterId = j.last_id ?? allAnthropicModels[allAnthropicModels.length - 1]?.id;
+
+    while (hasMore && afterId) {
+      const p = `/models?limit=1000&after_id=${encodeURIComponent(afterId)}`;
+      try {
+        const nextRes = await proxyFetch({ provider, baseUrl, apiKey, path: p, method: 'GET' });
+        if (!nextRes.ok) break;
+        const nextJson = await nextRes.json().catch(() => null);
+        if (!nextJson || !Array.isArray(nextJson.data)) break;
+        allAnthropicModels.push(...nextJson.data);
+        hasMore = Boolean(nextJson.has_more);
+        afterId = nextJson.last_id ?? nextJson.data[nextJson.data.length - 1]?.id;
+      } catch {
+        break;
+      }
+    }
+
+    models = allAnthropicModels.map((m: any) => ({
       id: m.id,
       name: m.display_name || m.id,
       tier: tierFor(provider, m.id),
+      kind: kindFor(m.id),
     }));
   } else if (provider === 'openrouter') {
-    models = (j.data || []).map((m: any) => ({
-      id: m.id,
-      name: m.name || m.id,
-      tier: tierFor(provider, m.id, m.pricing),
-    }));
+    const arr = Array.isArray(j) ? j : (j.data ?? j.models ?? []);
+    models = arr.map((m: any) => {
+      const id = m.id ?? m.name ?? '';
+      return {
+        id,
+        name: m.name || id,
+        tier: tierFor(provider, id, m.pricing),
+        kind: kindFor(id),
+      };
+    });
   } else {
-    models = (j.data || [])
-      .filter((m: any) => !NON_CHAT.test(m.id))
-      .map((m: any) => ({
-        id: m.id,
-        name: m.id,
-        tier: tierFor(provider, m.id),
-      }));
+    // openai, groq, mistral, deepseek, xai, cerebras, custom, together
+    const arr = Array.isArray(j) ? j : (j.data ?? j.models ?? []);
+    models = arr.map((m: any) => {
+      const id = m.id ?? m.name ?? '';
+      return {
+        id,
+        name: m.name || id,
+        tier: tierFor(provider, id),
+        kind: kindFor(id),
+      };
+    });
   }
-  models.sort((a, b) => a.name.localeCompare(b.name));
+
+  // Sort: chat models first, then other kinds, then alphabetically
+  models.sort((a, b) => {
+    const aChat = (a.kind ?? 'chat') === 'chat';
+    const bChat = (b.kind ?? 'chat') === 'chat';
+    if (aChat && !bChat) return -1;
+    if (!aChat && bChat) return 1;
+    const kindComp = (a.kind ?? 'chat').localeCompare(b.kind ?? 'chat');
+    if (kindComp !== 0) return kindComp;
+    return a.name.localeCompare(b.name);
+  });
+
   return { status: 'valid', models };
 }

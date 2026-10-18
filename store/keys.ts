@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { db, KeyRow } from '@/lib/db';
-import { ModelInfo, KeyStatus, listModels, ProviderId, tierFor } from '@/lib/providers';
+import { ModelInfo, KeyStatus, listModels, ProviderId, tierFor, kindFor } from '@/lib/providers';
 import { decryptKey } from '@/lib/crypto';
 
 interface KeysState {
@@ -16,6 +16,7 @@ interface KeysState {
   addKey: (keyData: KeyRow, models: ModelInfo[]) => Promise<void>;
   deleteKey: (keyId: string) => Promise<void>;
   recheckKey: (keyId: string) => Promise<{ status: KeyStatus; models: ModelInfo[]; detail?: string }>;
+  addManualModel: (keyId: string, modelId: string) => Promise<void>;
   refreshModelsForSelectedKey: () => Promise<void>;
   checkKeysHealth: () => Promise<void>;
 }
@@ -32,16 +33,32 @@ export const useKeysStore = create<KeysState>((set, get) => ({
     try {
       const allKeys = await db.keys.toArray();
 
-      // Load cached models for each key
+      // Load cached models for each key, including manual models
       const modelsMap: Record<string, ModelInfo[]> = {};
       for (const k of allKeys) {
         const cached = await db.meta.get(`models:${k.id}`);
+        const manual = await db.meta.get(`manualModels:${k.id}`);
+        const list: ModelInfo[] = [];
+
         if (cached && Array.isArray(cached.value)) {
-          modelsMap[k.id] = cached.value.map((m: ModelInfo) => ({
-            ...m,
-            tier: m.tier || tierFor(k.provider as ProviderId, m.id),
-          }));
+          list.push(
+            ...cached.value.map((m: ModelInfo) => ({
+              ...m,
+              tier: m.tier || tierFor(k.provider as ProviderId, m.id),
+              kind: m.kind || kindFor(m.id),
+            }))
+          );
         }
+
+        if (manual && Array.isArray(manual.value)) {
+          for (const mm of manual.value) {
+            if (!list.some((existing) => existing.id === mm.id)) {
+              list.push(mm);
+            }
+          }
+        }
+
+        modelsMap[k.id] = list;
       }
 
       // Load saved selectedKeyId & selectedModel
@@ -105,11 +122,20 @@ export const useKeysStore = create<KeysState>((set, get) => ({
     await db.keys.put(keyData);
     await db.meta.put({ key: `models:${keyData.id}`, value: models });
 
+    const manual = await db.meta.get(`manualModels:${keyData.id}`);
+    const manualList: ModelInfo[] = Array.isArray(manual?.value) ? manual.value : [];
+    const mergedList = [...models];
+    for (const mm of manualList) {
+      if (!mergedList.some((existing) => existing.id === mm.id)) {
+        mergedList.push(mm);
+      }
+    }
+
     const currentKeys = get().keys;
     const updatedKeys = [...currentKeys.filter((k) => k.id !== keyData.id), keyData];
     const updatedCachedModels = {
       ...get().cachedModels,
-      [keyData.id]: models,
+      [keyData.id]: mergedList,
     };
 
     let nextSelectedKeyId = get().selectedKeyId;
@@ -117,7 +143,7 @@ export const useKeysStore = create<KeysState>((set, get) => ({
 
     if (!nextSelectedKeyId || updatedKeys.length === 1) {
       nextSelectedKeyId = keyData.id;
-      nextSelectedModel = models.length > 0 ? models[0].id : null;
+      nextSelectedModel = mergedList.length > 0 ? mergedList[0].id : null;
       await db.meta.put({ key: 'selectedKeyId', value: nextSelectedKeyId });
       if (nextSelectedModel) {
         await db.meta.put({ key: 'selectedModel', value: nextSelectedModel });
@@ -135,6 +161,7 @@ export const useKeysStore = create<KeysState>((set, get) => ({
   deleteKey: async (keyId: string) => {
     await db.keys.delete(keyId);
     await db.meta.delete(`models:${keyId}`);
+    await db.meta.delete(`manualModels:${keyId}`);
 
     const remainingKeys = get().keys.filter((k) => k.id !== keyId);
     const updatedCached = { ...get().cachedModels };
@@ -195,14 +222,20 @@ export const useKeysStore = create<KeysState>((set, get) => ({
 
       await db.keys.put(updatedKey);
 
-      let cachedModels = get().cachedModels;
-      if (result.models.length > 0) {
-        await db.meta.put({ key: `models:${keyId}`, value: result.models });
-        cachedModels = {
-          ...cachedModels,
-          [keyId]: result.models,
-        };
+      const manual = await db.meta.get(`manualModels:${keyId}`);
+      const manualList: ModelInfo[] = Array.isArray(manual?.value) ? manual.value : [];
+      const mergedList = [...result.models];
+      for (const mm of manualList) {
+        if (!mergedList.some((existing) => existing.id === mm.id)) {
+          mergedList.push(mm);
+        }
       }
+
+      await db.meta.put({ key: `models:${keyId}`, value: result.models });
+      const cachedModels = {
+        ...get().cachedModels,
+        [keyId]: mergedList,
+      };
 
       const updatedKeys = get().keys.map((k) => (k.id === keyId ? updatedKey : k));
 
@@ -217,6 +250,36 @@ export const useKeysStore = create<KeysState>((set, get) => ({
       set({ recheckingKeyId: null });
       return { status: 'unknown' as KeyStatus, models: [], detail: 'Validation failed: ' + (e?.message || String(e)) };
     }
+  },
+
+  addManualModel: async (keyId: string, modelId: string) => {
+    const cleanId = modelId.trim();
+    if (!cleanId) return;
+
+    const manualRow = await db.meta.get(`manualModels:${keyId}`);
+    const existingList: ModelInfo[] = Array.isArray(manualRow?.value) ? manualRow.value : [];
+
+    const newModel: ModelInfo = {
+      id: cleanId,
+      name: cleanId,
+      kind: 'chat',
+      tier: 'unknown',
+    };
+
+    const nextManual = [...existingList.filter((m) => m.id !== cleanId), newModel];
+    await db.meta.put({ key: `manualModels:${keyId}`, value: nextManual });
+
+    const currentCached = get().cachedModels[keyId] || [];
+    const merged = [newModel, ...currentCached.filter((m) => m.id !== cleanId)];
+
+    set({
+      cachedModels: {
+        ...get().cachedModels,
+        [keyId]: merged,
+      },
+    });
+
+    await get().selectModel(cleanId);
   },
 
   refreshModelsForSelectedKey: async () => {
