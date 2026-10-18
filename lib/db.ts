@@ -23,6 +23,7 @@ export interface ChatRow {
   projectId?: string;
   incognito?: boolean;
   artifactsEnabled?: boolean;
+  workspaceId?: string;
 }
 
 export interface MemoryRow {
@@ -31,6 +32,10 @@ export interface MemoryRow {
   source: 'auto' | 'manual';
   createdAt: number;
   updatedAt: number;
+  category?: 'identity' | 'preference' | 'project' | 'skill' | 'other';
+  projectId?: string;
+  lastUsedAt?: number;
+  pinned?: boolean;
 }
 
 export interface MsgRow {
@@ -47,6 +52,7 @@ export interface MsgRow {
   provider?: string;
   tools?: { id: string; name: string; label: string; status: 'running' | 'done' | 'error'; detail?: string }[];
   artifacts?: { id: string; title: string; type: string; code: string }[];
+  plan?: { title: string; status: 'todo' | 'doing' | 'done' }[];
 }
 
 export interface FileRow {
@@ -76,6 +82,29 @@ export interface ProjectFileRow {
   text: string;
 }
 
+export interface WorkspaceRow {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WSFileRow {
+  wsId: string;
+  path: string;
+  content: string;
+  size: number;
+  updatedAt: number;
+}
+
+export interface WSCheckpointRow {
+  id: string;
+  wsId: string;
+  label: string;
+  createdAt: number;
+  changes: { path: string; before: string | null; after: string | null }[];
+}
+
 class AppDB extends Dexie {
   keys!: Table<KeyRow, string>;
   chats!: Table<ChatRow, string>;
@@ -85,6 +114,9 @@ class AppDB extends Dexie {
   projects!: Table<ProjectRow, string>;
   pfiles!: Table<ProjectFileRow, string>;
   memories!: Table<MemoryRow, string>;
+  workspaces!: Table<WorkspaceRow, string>;
+  wsfiles!: Table<WSFileRow, [string, string]>;
+  wscheckpoints!: Table<WSCheckpointRow, string>;
 
   constructor() {
     super('chatly');
@@ -104,6 +136,14 @@ class AppDB extends Dexie {
     });
     this.version(4).stores({
       memories: 'id,updatedAt',
+    });
+    this.version(5).stores({
+      workspaces: 'id,updatedAt',
+      wsfiles: '[wsId+path],wsId',
+      wscheckpoints: 'id,wsId,createdAt',
+    });
+    this.version(6).stores({
+      memories: 'id,updatedAt,projectId',
     });
   }
 }
