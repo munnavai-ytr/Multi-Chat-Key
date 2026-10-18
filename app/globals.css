@@ -32,3 +32,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-inter),Inter,
 .dark .hljs-number, .dark .hljs-attr, .dark .hljs-attribute, .dark .hljs-variable, .dark .hljs-template-variable { color: #d29922; }
 .dark .hljs-title, .dark .hljs-section, .dark .hljs-name, .dark .hljs-function .dark .hljs-title { color: #d2a8ff; }
 .dark .hljs-built_in, .dark .hljs-type, .dark .hljs-class .hljs-title { color: #79c0ff; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

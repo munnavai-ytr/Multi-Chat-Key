@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { exportAll, importAll } from '@/lib/backup';
 import {
   X,
   KeyRound,
@@ -102,6 +103,10 @@ export function SettingsModal() {
   const [storageUsage, setStorageUsage] = useState(0);
   const [storageQuota, setStorageQuota] = useState(0);
   const [isCheckingStorage, setIsCheckingStorage] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
 
   const formatBytes = (bytes: number) => {
     if (!bytes || bytes === 0) return '0 B';
@@ -201,6 +206,16 @@ export function SettingsModal() {
       return () => clearTimeout(timer);
     }
   }, [settingsOpen, settingsTab]);
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
 
   const handleTestSearch = async () => {
     setIsTestingSearch(true);
@@ -1402,8 +1417,81 @@ export function SettingsModal() {
             </div>
           </div>
 
-          <p className="text-xs text-muted">Data export/import and backup management.</p>
-        </div>
+          <div className="space-y-3">
+            <h4 className="text-xs font-semibold text-text uppercase tracking-wider">Backup & Reset</h4>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => exportAll(true)}
+                className="flex-1 px-3 py-2 rounded-lg bg-surface2 hover:bg-border text-xs font-medium text-text transition-colors cursor-pointer"
+              >
+                Export All (w/ attachments)
+              </button>
+              <input
+                type="file"
+                ref={importRef}
+                className="hidden"
+                accept=".json"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const result = await importAll(file);
+                    alert(`Imported ${result.chats} chats, ${result.messages} messages.`);
+                  } catch (e: any) {
+                    alert(`Import failed: ${e.message}`);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => importRef.current?.click()}
+                className="flex-1 px-3 py-2 rounded-lg bg-surface2 hover:bg-border text-xs font-medium text-text transition-colors cursor-pointer"
+              >
+                Import Backup
+              </button>
+            </div>
+            
+            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 space-y-2">
+              <p className="text-xs font-medium text-rose-600 dark:text-rose-400">Danger Zone</p>
+              <input
+                type="text"
+                placeholder="Type DELETE to confirm"
+                value={deleteConfirm}
+                onChange={(e) => setDeleteConfirm(e.target.value)}
+                className="w-full bg-surface border border-rose-500/20 rounded-lg px-3 py-2 text-xs text-text focus:outline-none focus:border-rose-500"
+              />
+              <button
+                type="button"
+                disabled={deleteConfirm !== 'DELETE'}
+                onClick={async () => {
+                  await db.delete();
+                  window.location.reload();
+                }}
+                className="w-full px-3 py-2 rounded-lg bg-rose-500 text-white text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity cursor-pointer"
+              >
+                Delete All Data
+              </button>
+            </div>
+          </div>
+
+          {isInstallable && (
+            <div className="space-y-3">
+              <h4 className="text-xs font-semibold text-text uppercase tracking-wider">App</h4>
+              <button
+                type="button"
+                onClick={async () => {
+                  deferredPrompt?.prompt();
+                  const { outcome } = await deferredPrompt.userChoice;
+                  if (outcome === 'accepted') setIsInstallable(false);
+                }}
+                className="w-full px-4 py-2.5 rounded-xl bg-accent text-accent-fg text-sm font-semibold hover:opacity-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                Install App
+              </button>
+            </div>
+          )
+          }
       ) : (
         <div className="space-y-5">
           {/* Master toggle */}
