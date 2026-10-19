@@ -17,6 +17,8 @@ import { SettingsModal } from './SettingsModal';
 import { ModelPicker, ModelPickerTrigger } from './ModelPicker';
 import { ProjectPage } from './ProjectPage';
 import { ArtifactPanel } from './ArtifactPanel';
+import { WorkspacePanel } from './WorkspacePanel';
+import { DiffApprovalModal } from './DiffApprovalModal';
 import { requestPersistence } from '@/lib/storage';
 import { CodeConfirmModal } from './CodeConfirmModal';
 
@@ -83,6 +85,10 @@ export function AppShell() {
         setCodeConfirmModal,
         artifact,
         setArtifact,
+        workspacePanelOpen,
+        setWorkspacePanelOpen,
+        approval,
+        resolveApproval,
         activeView,
         setActiveView,
         sidebarOpen,
@@ -90,6 +96,10 @@ export function AppShell() {
       } = useUIStore.getState();
 
       // 1. Modals
+      if (approval) {
+        resolveApproval(false, false);
+        return;
+      }
       if (settingsOpen) {
         setSettingsOpen(false);
         return;
@@ -111,6 +121,10 @@ export function AppShell() {
       }
 
       // 3. Workspace panel
+      if (workspacePanelOpen) {
+        setWorkspacePanelOpen(false);
+        return;
+      }
       if (activeView === 'project') {
         setActiveView('chat');
         return;
@@ -292,6 +306,12 @@ export function AppShell() {
 
       {/* Sandboxed Artifacts Panel (HTML, SVG, React previews) */}
       <ArtifactPanel />
+
+      {/* Code Workspace Panel */}
+      <WorkspacePanel />
+
+      {/* Diff Approval Modal */}
+      <DiffApprovalModal />
 
       {/* Subtle Toast Notification */}
       {toastMessage && (

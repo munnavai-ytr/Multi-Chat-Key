@@ -134,6 +134,7 @@ export function SettingsModal() {
   const [toolRunCode, setToolRunCode] = useState(true);
   const [toolRemember, setToolRemember] = useState(true);
   const [toolRunAsk, setToolRunAsk] = useState(true);
+  const [wsApproval, setWsApproval] = useState<'ask' | 'auto'>('ask');
 
   const loadToolSettings = async () => {
     try {
@@ -149,6 +150,8 @@ export function SettingsModal() {
       if (rem !== undefined) setToolRemember(Boolean(rem.value));
       const ask = await db.meta.get('toolRunAsk');
       if (ask !== undefined) setToolRunAsk(Boolean(ask.value));
+      const wsa = await db.meta.get('wsApproval');
+      if (wsa !== undefined) setWsApproval(wsa.value === 'auto' ? 'auto' : 'ask');
     } catch {}
   };
 
@@ -724,7 +727,7 @@ export function SettingsModal() {
                   </label>
                 </div>
                 <p className="text-xs text-muted leading-relaxed">
-                  The AI decides when to use these. You can also just ask: &apos;search the web for ""&apos;, &apos;make a landing page&apos;, &apos;calculate ""&apos;.
+                  The AI decides when to use these. You can also just ask: &apos;search the web for &quot;...&quot;&apos;, &apos;make a landing page&apos;, &apos;calculate &quot;...&quot;&apos;.
                 </p>
               </div>
 
@@ -845,6 +848,26 @@ export function SettingsModal() {
                       />
                       <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
                     </label>
+                  </div>
+
+                  {/* Workspace Diff Approval Setting */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border mt-3">
+                    <div>
+                      <span className="text-xs font-semibold text-text">Workspace File Edits Approval</span>
+                      <p className="text-[11px] text-muted">Review code diffs before applying AI changes to workspace files</p>
+                    </div>
+                    <select
+                      value={wsApproval}
+                      onChange={async (e) => {
+                        const val = e.target.value as 'ask' | 'auto';
+                        setWsApproval(val);
+                        await db.meta.put({ key: 'wsApproval', value: val });
+                      }}
+                      className="bg-surface border border-border text-xs rounded-lg px-2.5 py-1 text-text focus:outline-none focus:border-accent cursor-pointer"
+                    >
+                      <option value="ask">Always ask</option>
+                      <option value="auto">Auto-apply</option>
+                    </select>
                   </div>
                 </div>
               )}
@@ -1161,7 +1184,7 @@ export function SettingsModal() {
                     {isValidating ? (
                       <>
                         <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Validating Key ""</span>
+                        <span>Validating Key...</span>
                       </>
                     ) : (
                       <span>Save Key</span>
@@ -1297,7 +1320,7 @@ export function SettingsModal() {
                   {isTestingSearch ? (
                     <>
                       <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Testing ""</span>
+                      <span>Testing...</span>
                     </>
                   ) : (
                     <>
@@ -1391,7 +1414,7 @@ export function SettingsModal() {
                   {isTestingSearch ? (
                     <>
                       <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Testing ""</span>
+                      <span>Testing...</span>
                     </>
                   ) : (
                     <>
@@ -1410,7 +1433,7 @@ export function SettingsModal() {
                 {isSavingSearch ? (
                   <>
                     <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Saving ""</span>
+                    <span>Saving...</span>
                   </>
                 ) : (
                   <span>Save Search Key</span>

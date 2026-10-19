@@ -1,10 +1,18 @@
 import { create } from 'zustand';
+import { db } from '@/lib/db';
 
 export type SettingsTabId = 'keys' | 'search' | 'memory' | 'usage' | 'data' | 'tools' | 'advanced';
 
 interface ToastAction {
   label: string;
   onClick: () => void;
+}
+
+export interface DiffApproval {
+  path: string;
+  before: string | null;
+  after: string | null;
+  resolve: (ok: boolean) => void;
 }
 
 interface UIState {
@@ -20,16 +28,25 @@ interface UIState {
   setActiveView: (view: 'chat' | 'project') => void;
   artifact: { lang: string; code: string; title?: string } | null;
   setArtifact: (artifact: { lang: string; code: string; title?: string } | null) => void;
+  workspacePanelOpen: boolean;
+  setWorkspacePanelOpen: (open: boolean | ((prev: boolean) => boolean)) => void;
+  activeWorkspaceId: string | null;
+  setActiveWorkspaceId: (id: string | null) => void;
   toastMessage: string | null;
   toastAction: ToastAction | null;
   showToast: (msg: string, duration?: number, action?: ToastAction) => void;
   codeConfirmModal: { lang: string; code: string; resolve: (ok: boolean) => void } | null;
   setCodeConfirmModal: (modal: { lang: string; code: string; resolve: (ok: boolean) => void } | null) => void;
+  approval: DiffApproval | null;
+  autoApplyTask: boolean;
+  setAutoApplyTask: (auto: boolean) => void;
+  requestApproval: (change: { path: string; before: string | null; after: string | null }) => Promise<boolean>;
+  resolveApproval: (ok: boolean, autoApplyRest?: boolean) => void;
 }
 
 let toastTimer: any = null;
 
-export const useUIStore = create<UIState>((set) => ({
+export const useUIStore = create<UIState>((set, get) => ({
   sidebarOpen: false,
   setSidebarOpen: (open) =>
     set((state) => ({
@@ -51,6 +68,13 @@ export const useUIStore = create<UIState>((set) => ({
   setActiveView: (view) => set({ activeView: view }),
   artifact: null,
   setArtifact: (artifact) => set({ artifact }),
+  workspacePanelOpen: false,
+  setWorkspacePanelOpen: (open) =>
+    set((state) => ({
+      workspacePanelOpen: typeof open === 'function' ? open(state.workspacePanelOpen) : open,
+    })),
+  activeWorkspaceId: null,
+  setActiveWorkspaceId: (id) => set({ activeWorkspaceId: id }),
   toastMessage: null,
   toastAction: null,
   showToast: (msg, duration = 2000, action) => {
@@ -64,4 +88,26 @@ export const useUIStore = create<UIState>((set) => ({
   },
   codeConfirmModal: null,
   setCodeConfirmModal: (modal) => set({ codeConfirmModal: modal }),
+  approval: null,
+  autoApplyTask: false,
+  setAutoApplyTask: (auto) => set({ autoApplyTask: auto }),
+  requestApproval: async (change) => {
+    const wsApproval = (await db.meta.get('wsApproval'))?.value;
+    if (wsApproval === 'auto' || get().autoApplyTask) {
+      return true;
+    }
+    return new Promise<boolean>((resolve) => {
+      set({ approval: { ...change, resolve } });
+    });
+  },
+  resolveApproval: (ok: boolean, autoApplyRest = false) => {
+    const current = get().approval;
+    if (autoApplyRest) {
+      set({ autoApplyTask: true });
+    }
+    if (current) {
+      current.resolve(ok);
+      set({ approval: null });
+    }
+  },
 }));

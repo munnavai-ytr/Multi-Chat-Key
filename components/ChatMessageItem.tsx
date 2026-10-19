@@ -21,6 +21,11 @@ import {
   Globe,
   RotateCw,
   AppWindow,
+  Circle,
+  CheckCircle2,
+  ListTodo,
+  Play,
+  Loader2,
 } from 'lucide-react';
 import { Markdown } from './Markdown';
 import { useUIStore } from '@/store/ui';
@@ -500,6 +505,38 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
           </div>
         )}
 
+        {/* Plan Checklist */}
+        {message.plan && message.plan.length > 0 && (
+          <div className="mb-3 p-3 rounded-xl bg-surface2/60 border border-border text-xs space-y-1.5">
+            <div className="font-semibold text-text flex items-center gap-1.5 mb-1.5 text-[11px] uppercase tracking-wider text-muted">
+              <ListTodo className="w-3.5 h-3.5 text-accent" />
+              <span>Plan</span>
+            </div>
+            {message.plan.map((task, tIdx) => (
+              <div key={tIdx} className="flex items-center gap-2">
+                {task.status === 'done' ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                ) : task.status === 'doing' ? (
+                  <Loader2 className="w-3.5 h-3.5 text-accent animate-spin shrink-0" />
+                ) : (
+                  <Circle className="w-3.5 h-3.5 text-muted shrink-0" />
+                )}
+                <span
+                  className={
+                    task.status === 'done'
+                      ? 'text-muted line-through'
+                      : task.status === 'doing'
+                      ? 'text-text font-medium'
+                      : 'text-muted'
+                  }
+                >
+                  {task.title}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Tool Chips */}
         <MemoToolChips tools={message.tools} />
 
@@ -522,6 +559,20 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 
         {/* Rich Markdown content */}
         {hasContent && <Markdown content={message.content} isStreaming={isStreaming} />}
+
+        {/* Continue Button if reached step limit */}
+        {message.needsContinue && !isStreaming && (
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => useChatStore.getState().sendMessage('continue')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-accent text-white font-medium text-xs hover:bg-accent/90 transition-all cursor-pointer shadow-xs active:scale-95"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>Continue</span>
+            </button>
+          </div>
+        )}
 
         {/* Web Search Sources Chips */}
         {message.sources && message.sources.length > 0 && (

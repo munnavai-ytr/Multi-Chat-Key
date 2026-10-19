@@ -53,6 +53,7 @@ export interface MsgRow {
   tools?: { id: string; name: string; label: string; status: 'running' | 'done' | 'error'; detail?: string }[];
   artifacts?: { id: string; title: string; type: string; code: string }[];
   plan?: { title: string; status: 'todo' | 'doing' | 'done' }[];
+  needsContinue?: boolean;
 }
 
 export interface FileRow {

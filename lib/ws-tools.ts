@@ -62,6 +62,7 @@ export async function executeWsTool(
       }
 
       case 'edit_file': {
+        if (!args.old_str) return { ok: false, text: 'old_str cannot be empty.' };
         const file = await db.wsfiles.get({ wsId: ctx.wsId, path: args.path });
         if (!file) return { ok: false, text: 'File not found.' };
         const occurrences = file.content.split(args.old_str).length - 1;
@@ -70,7 +71,7 @@ export async function executeWsTool(
         
         const after = args.replace_all 
           ? file.content.split(args.old_str).join(args.new_str)
-          : file.content.replace(args.old_str, args.new_str);
+          : file.content.replace(args.old_str, () => args.new_str);
           
         const approved = await ctx.requestApproval({ path: args.path, before: file.content, after });
         if (!approved) return { ok: false, text: 'The user rejected this edit.' };
