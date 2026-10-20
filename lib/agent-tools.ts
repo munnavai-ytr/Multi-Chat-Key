@@ -1,11 +1,12 @@
 import { webSearch, SearchHit } from './search';
 import { runInSandbox } from './sandbox-runner';
-import { db } from './db';
+import { db, DocRow } from './db';
+import { saveMemoryFact, tok } from './memory';
 import { decryptKey } from './crypto';
-import { saveMemoryFact } from './memory';
 import { executeWsTool } from './ws-tools';
 import { recordChange } from './workspace';
 import { useUIStore } from '@/store/ui';
+import { buildDocument } from './doc-builders';
 
 export interface ToolCtx {
   chatId: string;
@@ -32,7 +33,13 @@ const WS_TOOL_NAMES = new Set([
 export async function executeTool(
   call: { name: string; args: any },
   ctx: ToolCtx
-): Promise<{ text: string; sources?: { title: string; url: string }[]; artifact?: any; ok: boolean }> {
+): Promise<{
+  text: string;
+  sources?: { title: string; url: string }[];
+  artifact?: any;
+  document?: { id: string; name: string; format: string; size: number };
+  ok: boolean;
+}> {
   try {
     if (WS_TOOL_NAMES.has(call.name)) {
       if (!ctx.wsId) {
@@ -94,58 +101,102 @@ export async function executeTool(
     }
 
     if (call.name === 'remember') {
+      const chat = await db.chats.get(ctx.chatId);
+      const category = call.args.category || 'other';
       const saved = await saveMemoryFact(
         String(call.args.fact || ''),
-        call.args.category || 'other'
+        category,
+        chat?.projectId
       );
       return { ok: true, text: saved ? 'Saved to memory.' : 'Not saved (duplicate or sensitive).' };
     }
 
     if (call.name === 'search_chats') {
-      const q = String(call.args.query || '').trim().toLowerCase();
-      const limit = Number(call.args.limit) || 5;
-      const tok = (s: string) => new Set(s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+      const q = String(call.args.query || '').trim();
+      const limit = Math.min(10, Math.max(1, Number(call.args.limit) || 5));
       const qTokens = tok(q);
+      if (qTokens.size === 0) return { ok: true, text: 'No matching chats.' };
+
       const allChats = await db.chats.toArray();
-      const validChats = allChats.filter((c) => !c.incognito && c.id !== ctx.chatId);
-      const chatScores: { chat: any; score: number; hits: string[] }[] = [];
-      for (const chat of validChats) {
-        const msgs = await db.messages.where('chatId').equals(chat.id).toArray();
-        let matchCount = 0;
-        const matchingSnippets: string[] = [];
-        for (const m of msgs) {
-          const mTokens = tok(m.content);
-          let overlap = 0;
-          qTokens.forEach((t) => {
-            if (mTokens.has(t)) overlap++;
-          });
-          if (overlap > 0) {
-            matchCount += overlap;
-            matchingSnippets.push(`${m.role}: ${m.content.slice(0, 300)}`);
-          }
-        }
-        if (matchCount > 0) {
-          const score = matchCount / Math.sqrt(Math.max(1, msgs.length));
-          chatScores.push({ chat, score, hits: matchingSnippets.slice(0, 2) });
+      const validChats = new Map<string, (typeof allChats)[0]>();
+      for (const c of allChats) {
+        if (!c.incognito && c.id !== ctx.chatId) {
+          validChats.set(c.id, c);
         }
       }
-      chatScores.sort((a, b) => b.score - a.score);
-      const top = chatScores.slice(0, limit);
-      if (!top.length) return { ok: true, text: 'No matching chats found.' };
-      const res = top
-        .map(
-          (t) =>
-            `[${t.chat.title}, ${new Date(t.chat.updatedAt).toLocaleDateString()}]\n` +
-            t.hits.join('\n')
-        )
-        .join('\n\n');
-      return { ok: true, text: res.slice(0, 6000) };
+
+      const stats = new Map<
+        string,
+        {
+          chat: (typeof allChats)[0];
+          sum: number;
+          msgCount: number;
+          bestMsgs: { overlap: number; line: string }[];
+        }
+      >();
+
+      let scannedCount = 0;
+      await db.messages.each((msg) => {
+        if (scannedCount >= 20000) return;
+        scannedCount++;
+
+        const chat = validChats.get(msg.chatId);
+        if (!chat) return;
+
+        let entry = stats.get(msg.chatId);
+        if (!entry) {
+          entry = { chat, sum: 0, msgCount: 0, bestMsgs: [] };
+          stats.set(msg.chatId, entry);
+        }
+        entry.msgCount++;
+
+        const mTokens = tok(msg.content);
+        let overlap = 0;
+        qTokens.forEach((t) => {
+          if (mTokens.has(t)) overlap++;
+        });
+
+        if (overlap > 0) {
+          entry.sum += overlap;
+          const snippet = `${msg.role}: ${msg.content.slice(0, 300)}`;
+          entry.bestMsgs.push({ overlap, line: snippet });
+          entry.bestMsgs.sort((a, b) => b.overlap - a.overlap);
+          if (entry.bestMsgs.length > 2) {
+            entry.bestMsgs.length = 2;
+          }
+        }
+      });
+
+      const scoredChats: { chat: (typeof allChats)[0]; score: number; bestMsgs: string[] }[] = [];
+      for (const entry of stats.values()) {
+        if (entry.sum > 0 && entry.msgCount > 0) {
+          const score = entry.sum / Math.sqrt(entry.msgCount);
+          scoredChats.push({
+            chat: entry.chat,
+            score,
+            bestMsgs: entry.bestMsgs.map((b) => b.line),
+          });
+        }
+      }
+
+      scoredChats.sort((a, b) => b.score - a.score);
+      const top = scoredChats.slice(0, limit);
+      if (top.length === 0) return { ok: true, text: 'No matching chats.' };
+
+      const lines = top.map((t) => {
+        const d = new Date(t.chat.updatedAt).toISOString().slice(0, 10);
+        return `[${t.chat.title}, ${d}]\n` + t.bestMsgs.join('\n');
+      });
+
+      const res = lines.join('\n\n').slice(0, 6000);
+      return { ok: true, text: res };
     }
 
     if (call.name === 'forget') {
       const q = String(call.args.query || '').trim();
-      const tok = (s: string) => new Set(s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
       const qTokens = tok(q);
+      if (qTokens.size === 0) return { ok: true, text: 'No matching memory.' };
+
       const allMemories = await db.memories.toArray();
       const toDelete = allMemories
         .filter((m) => {
@@ -153,11 +204,48 @@ export async function executeTool(
           return [...qTokens].every((t) => mTokens.has(t));
         })
         .slice(0, 5);
-      if (!toDelete.length) return { ok: true, text: 'No matching memories found to forget.' };
+
+      if (!toDelete.length) return { ok: true, text: 'No matching memory.' };
       await db.memories.bulkDelete(toDelete.map((m) => m.id));
       return {
         ok: true,
-        text: `Deleted memories:\n` + toDelete.map((m) => `- ${m.text}`).join('\n'),
+        text: `Deleted: ` + toDelete.map((m) => m.text).join('; '),
+      };
+    }
+
+    if (call.name === 'create_document') {
+      const docResult = await buildDocument(call.args);
+      const docId = crypto.randomUUID();
+      const docRow: DocRow = {
+        id: docId,
+        chatId: ctx.chatId,
+        msgId: ctx.msgId,
+        name: docResult.name,
+        format: docResult.format,
+        mime: docResult.mime,
+        size: docResult.size,
+        data: docResult.data,
+        createdAt: Date.now(),
+      };
+      await db.docs.put(docRow);
+
+      const docItem = {
+        id: docId,
+        name: docResult.name,
+        format: docResult.format,
+        size: docResult.size,
+      };
+
+      const existingMsg = await db.messages.get(ctx.msgId);
+      if (existingMsg) {
+        const nextDocs = [...(existingMsg.documents || []), docItem];
+        await db.messages.update(ctx.msgId, { documents: nextDocs });
+      }
+
+      return {
+        ok: true,
+        text: `Created document "${docResult.name}" (${docResult.format.toUpperCase()}, ${docResult.size} bytes). Download card is available.`,
+        document: docItem,
       };
     }
 

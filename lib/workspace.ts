@@ -1,5 +1,6 @@
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
 import { db } from './db';
+import { saveFile } from './save-file';
 
 const IGNORE = /(^|\/)(node_modules|\.git|\.next|dist|build|out|coverage|\.turbo|\.cache|android\/build)(\/|$)/;
 const BINARY = /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|ttf|otf|mp[34]|mov|wasm|keystore|jar|apk|aab|so|bin|lock)$/i;
@@ -55,11 +56,9 @@ export async function exportZip(wsId: string) {
   const files = await db.wsfiles.where('wsId').equals(wsId).toArray();
   const zipped = zipSync(Object.fromEntries(files.map((f) => [f.path, strToU8(f.content)])));
   const ws = await db.workspaces.get(wsId);
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([zipped], { type: 'application/zip' }));
-  a.download = (ws?.name || 'workspace') + '-fixed.zip';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  const blob = new Blob([zipped.buffer as ArrayBuffer], { type: 'application/zip' });
+  const filename = (ws?.name || 'workspace') + '-fixed.zip';
+  await saveFile(blob, filename);
 }
 
 export async function createEmptyWorkspace(name?: string): Promise<string> {

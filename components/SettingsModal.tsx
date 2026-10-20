@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { exportAll, importAll } from '@/lib/backup';
+import { saveFile } from '@/lib/save-file';
 import {
   X,
   KeyRound,
@@ -20,6 +21,15 @@ import {
   Globe,
   Search,
   Sliders,
+  Pin,
+  PinOff,
+  Download,
+  Upload,
+  Sparkles,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+  Copy,
 } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
@@ -29,6 +39,7 @@ import { encryptKey, decryptKey } from '@/lib/crypto';
 import { db, KeyRow, MemoryRow } from '@/lib/db';
 import { webSearch } from '@/lib/search';
 import { storageInfo, requestPersistence } from '@/lib/storage';
+import { similar, rebuildProfile } from '@/lib/memory';
 
 const PROVIDER_OPTIONS: { id: ProviderId; name: string; prefixHint: string }[] = [
   { id: 'openai', name: 'OpenAI', prefixHint: 'sk-...' },
@@ -133,8 +144,29 @@ export function SettingsModal() {
   const [toolArtifact, setToolArtifact] = useState(true);
   const [toolRunCode, setToolRunCode] = useState(true);
   const [toolRemember, setToolRemember] = useState(true);
+  const [toolSearchChats, setToolSearchChats] = useState(true);
+  const [toolForget, setToolForget] = useState(true);
+  const [toolCreateDocument, setToolCreateDocument] = useState(true);
   const [toolRunAsk, setToolRunAsk] = useState(true);
   const [wsApproval, setWsApproval] = useState<'ask' | 'auto'>('ask');
+
+  const [profileText, setProfileText] = useState('');
+  const [profileUpdatedAt, setProfileUpdatedAt] = useState<number | null>(null);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editedProfileText, setEditedProfileText] = useState('');
+  const [isRebuildingProfile, setIsRebuildingProfile] = useState(false);
+  const [memorySearch, setMemorySearch] = useState('');
+  const [newMemoryCategory, setNewMemoryCategory] = useState<
+    'identity' | 'preference' | 'project' | 'skill' | 'other'
+  >('identity');
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
+    identity: true,
+    preference: true,
+    project: true,
+    skill: true,
+    other: true,
+  });
+  const [showDuplicates, setShowDuplicates] = useState(false);
 
   const loadToolSettings = async () => {
     try {
@@ -148,6 +180,12 @@ export function SettingsModal() {
       if (rc !== undefined) setToolRunCode(Boolean(rc.value));
       const rem = await db.meta.get('tool:remember');
       if (rem !== undefined) setToolRemember(Boolean(rem.value));
+      const sc = await db.meta.get('tool:search_chats');
+      if (sc !== undefined) setToolSearchChats(Boolean(sc.value));
+      const fg = await db.meta.get('tool:forget');
+      if (fg !== undefined) setToolForget(Boolean(fg.value));
+      const cd = await db.meta.get('tool:create_document');
+      if (cd !== undefined) setToolCreateDocument(Boolean(cd.value));
       const ask = await db.meta.get('toolRunAsk');
       if (ask !== undefined) setToolRunAsk(Boolean(ask.value));
       const wsa = await db.meta.get('wsApproval');
@@ -161,6 +199,16 @@ export function SettingsModal() {
       setMemoryEnabled(memMeta ? Boolean(memMeta.value) : true);
       const all = await db.memories.orderBy('updatedAt').reverse().toArray();
       setMemories(all);
+      const p = await db.meta.get('profile');
+      if (p?.value) {
+        setProfileText(p.value.text || '');
+        setProfileUpdatedAt(p.value.updatedAt || null);
+        setEditedProfileText(p.value.text || '');
+      } else {
+        setProfileText('');
+        setProfileUpdatedAt(null);
+        setEditedProfileText('');
+      }
     } catch {
       // ignore
     }
@@ -361,14 +409,118 @@ export function SettingsModal() {
       source: 'manual',
       createdAt: now,
       updatedAt: now,
+      category: newMemoryCategory,
+      lastUsedAt: now,
     });
     setNewMemoryText('');
     const count = await db.memories.count();
-    if (count > 100) {
-      const old = await db.memories.orderBy('updatedAt').limit(count - 100).primaryKeys();
+    if (count > 300) {
+      const old = await db.memories.orderBy('updatedAt').limit(count - 300).primaryKeys();
       await db.memories.bulkDelete(old);
     }
     await loadMemories();
+  };
+
+  const handleTogglePin = async (m: MemoryRow) => {
+    const nextPinned = !m.pinned;
+    await db.memories.update(m.id, { pinned: nextPinned, updatedAt: getNow() });
+    await loadMemories();
+  };
+
+  const handleRebuildProfile = async () => {
+    setIsRebuildingProfile(true);
+    try {
+      const text = await rebuildProfile();
+      if (text) {
+        setProfileText(text);
+        setEditedProfileText(text);
+        setProfileUpdatedAt(Date.now());
+        useUIStore.getState().showToast('Profile summary updated', 2000);
+      } else {
+        useUIStore.getState().showToast('Could not rebuild profile. Add API key or memories first.', 3000);
+      }
+    } catch (err: any) {
+      useUIStore.getState().showToast('Rebuild failed: ' + (err.message || 'Error'), 3000);
+    } finally {
+      setIsRebuildingProfile(false);
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    const text = editedProfileText.trim();
+    const profileVal = {
+      text,
+      updatedAt: Date.now(),
+      basedOnCount: memories.length,
+    };
+    await db.meta.put({ key: 'profile', value: profileVal });
+    setProfileText(text);
+    setProfileUpdatedAt(profileVal.updatedAt);
+    setIsEditingProfile(false);
+    useUIStore.getState().showToast('Profile saved', 2000);
+  };
+
+  const handleExportMemories = () => {
+    const data = JSON.stringify(memories, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const filename = `chatly-memories-${new Date().toISOString().slice(0, 10)}.json`;
+    saveFile(blob, filename).catch((err) => console.error('Failed to export memories', err));
+  };
+
+  const handleImportMemories = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const content = await file.text();
+      const parsed = JSON.parse(content);
+      if (!Array.isArray(parsed)) throw new Error('Expected a JSON array of memories.');
+      let imported = 0;
+      let skipped = 0;
+      const now = getNow();
+      const existing = await db.memories.toArray();
+
+      for (const item of parsed) {
+        if (typeof item?.text !== 'string' || !item.text.trim()) {
+          skipped++;
+          continue;
+        }
+        const text = item.text.trim().slice(0, 200);
+        if (text.length < 5 || existing.some((ex) => similar(ex.text, text))) {
+          skipped++;
+          continue;
+        }
+        const cat = ['identity', 'preference', 'project', 'skill', 'other'].includes(item.category)
+          ? item.category
+          : 'other';
+        const row: MemoryRow = {
+          id: crypto.randomUUID(),
+          text,
+          source: 'manual',
+          createdAt: item.createdAt || now,
+          updatedAt: now,
+          category: cat,
+          projectId: item.projectId,
+          lastUsedAt: item.lastUsedAt || now,
+          pinned: Boolean(item.pinned),
+        };
+        await db.memories.put(row);
+        existing.push(row);
+        imported++;
+      }
+
+      await loadMemories();
+      useUIStore.getState().showToast(`Imported ${imported} memories (${skipped} skipped)`, 3000);
+    } catch (err: any) {
+      useUIStore.getState().showToast('Import failed: ' + (err.message || 'Invalid format'), 4000);
+    } finally {
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  const handleMergeDuplicate = async (keepId: string, deleteId: string) => {
+    await db.memories.delete(deleteId);
+    await loadMemories();
+    useUIStore.getState().showToast('Merged duplicate memory', 2000);
   };
 
   const handleSaveEdit = async (id: string) => {
@@ -661,7 +813,7 @@ export function SettingsModal() {
             <Brain className="w-3.5 h-3.5" />
             <span>Memory</span>
             <span className="ml-1 text-[11px] px-1.5 py-0.2 rounded-full bg-surface2 text-muted">
-              {memories.length}/100
+              {memories.length}/300
             </span>
           </button>
           <button
@@ -822,6 +974,69 @@ export function SettingsModal() {
                           const val = e.target.checked;
                           setToolRemember(val);
                           await db.meta.put({ key: 'tool:remember', value: val });
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+                    </label>
+                  </div>
+
+                  {/* Search Chats Tool */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border">
+                    <div>
+                      <span className="text-xs font-semibold text-text">Search Chats</span>
+                      <p className="text-[11px] text-muted">Search your past conversations for relevant excerpts when referred to</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={toolSearchChats}
+                        onChange={async (e) => {
+                          const val = e.target.checked;
+                          setToolSearchChats(val);
+                          await db.meta.put({ key: 'tool:search_chats', value: val });
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+                    </label>
+                  </div>
+
+                  {/* Forget Memory Tool */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border">
+                    <div>
+                      <span className="text-xs font-semibold text-text">Forget Memory</span>
+                      <p className="text-[11px] text-muted">Allow the AI to delete specific memories when you ask it to forget</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={toolForget}
+                        onChange={async (e) => {
+                          const val = e.target.checked;
+                          setToolForget(val);
+                          await db.meta.put({ key: 'tool:forget', value: val });
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+                    </label>
+                  </div>
+
+                  {/* Create Document Tool */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border">
+                    <div>
+                      <span className="text-xs font-semibold text-text">Create Documents</span>
+                      <p className="text-[11px] text-muted">Generate downloadable files: Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, Markdown, CSV</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={toolCreateDocument}
+                        onChange={async (e) => {
+                          const val = e.target.checked;
+                          setToolCreateDocument(val);
+                          await db.meta.put({ key: 'tool:create_document', value: val });
                         }}
                         className="sr-only peer"
                       />
@@ -1555,178 +1770,93 @@ export function SettingsModal() {
           )}
         </div>
       ) : settingsTab === 'memory' ? (
-        <div className="space-y-5">
-          {/* Master toggle */}
-          <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/60 border border-border">
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-text">Long-term Memory</h3>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent font-medium">
-                  {memories.length} / 100
-                </span>
+        <div className="space-y-6">
+          {/* Master toggle & Explainer */}
+          <div className="p-4 rounded-xl bg-surface2/60 border border-border space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-text">Long-term Memory ({memories.length}/300)</h3>
+                <p className="text-xs text-muted mt-0.5">Durable facts, preferences & projects</p>
               </div>
-              <p className="text-xs text-muted mt-0.5">
-                Automatically remember durable facts and preferences across chats
-              </p>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" checked={memoryEnabled} onChange={handleToggleMemoryEnabled} className="sr-only peer" />
+                <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:bg-accent" />
+              </label>
             </div>
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={memoryEnabled}
-                onChange={handleToggleMemoryEnabled}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+            <p className="text-xs text-muted leading-relaxed">
+              Stored only on this device. Relevant memories are sent to your AI provider together with your messages. Incognito chats never read or write memory and are excluded from chat search.
+            </p>
+          </div>
+
+          {/* Profile Card */}
+          <div className="p-4 rounded-xl bg-surface2/40 border border-border space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-text">Profile Summary</h3>
+              <div className="flex items-center gap-1">
+                <button onClick={handleRebuildProfile} disabled={isRebuildingProfile} className="p-1.5 rounded-lg hover:bg-surface2 text-muted hover:text-accent cursor-pointer">
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRebuildingProfile ? 'animate-spin' : ''}`} />
+                </button>
+                <button onClick={() => setIsEditingProfile(!isEditingProfile)} className="p-1.5 rounded-lg hover:bg-surface2 text-muted hover:text-text cursor-pointer">
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+            {isEditingProfile ? (
+              <div className="space-y-2">
+                <textarea value={editedProfileText} onChange={(e) => setEditedProfileText(e.target.value)} className="w-full bg-surface border border-accent rounded-lg p-2 text-xs text-text h-32" />
+                <button onClick={handleSaveProfile} className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-semibold cursor-pointer">Save</button>
+              </div>
+            ) : (
+              <p className="text-xs text-text/80 leading-relaxed whitespace-pre-line">{profileText || 'No profile generated yet.'}</p>
+            )}
+            {profileUpdatedAt && <p className="text-[10px] text-muted">Last updated: {new Date(profileUpdatedAt).toLocaleString()}</p>}
+          </div>
+
+          {/* Import/Export */}
+          <div className="flex gap-2 text-xs">
+            <button onClick={handleExportMemories} className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-surface2 hover:bg-border text-text transition-colors cursor-pointer">
+              <Download className="w-3.5 h-3.5" /> Export JSON
+            </button>
+            <label className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-surface2 hover:bg-border text-text transition-colors cursor-pointer">
+              <Upload className="w-3.5 h-3.5" /> Import JSON
+              <input type="file" accept=".json" onChange={handleImportMemories} className="hidden" />
             </label>
           </div>
 
-          {/* Small muted explainer */}
-          <p className="text-xs text-muted leading-relaxed">
-            Memory is stored only on this device. Your chats are sent to your chosen AI provider as usual.
-          </p>
-
-          {/* Add memory form */}
-          <form onSubmit={handleAddMemory} className="flex gap-2">
-            <input
-              type="text"
-              value={newMemoryText}
-              onChange={(e) => setNewMemoryText(e.target.value)}
-              placeholder="Add a fact or preference (e.g. I prefer short answers)..."
-              maxLength={200}
-              className="flex-1 bg-surface2/60 focus:bg-surface border border-border focus:border-accent rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-text placeholder:text-muted focus:outline-none transition-colors"
-            />
-            <button
-              type="submit"
-              disabled={!newMemoryText.trim() || memories.length >= 100}
-              className="px-4 py-2.5 rounded-xl bg-accent text-accent-fg text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity shrink-0 flex items-center gap-1 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add memory</span>
-            </button>
-          </form>
-
-          {/* List of memories */}
+          {/* Search & Duplicates */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs text-muted px-1">
-              <span>Saved Memories</span>
-              <span>{memories.length} / 100</span>
-            </div>
-
-            {memories.length === 0 ? (
-              <div className="p-8 text-center text-xs text-muted rounded-xl border border-dashed border-border bg-surface2/30">
-                No memories saved yet. As you chat, durable facts about you will be extracted automatically, or you can add them manually above.
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
-                {memories.map((m) => (
-                  <div
-                    key={m.id}
-                    className="p-3 rounded-xl bg-surface2/50 border border-border flex items-start justify-between gap-3 text-xs group hover:border-accent/30 transition-colors"
-                  >
-                    {editingId === m.id ? (
-                      <div className="flex-1 flex gap-2 items-center">
-                        <input
-                          type="text"
-                          value={editingText}
-                          onChange={(e) => setEditingText(e.target.value)}
-                          maxLength={200}
-                          className="flex-1 bg-surface border border-accent rounded-lg px-2.5 py-1 text-xs text-text focus:outline-none"
-                          autoFocus
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleSaveEdit(m.id)}
-                          className="p-1 text-emerald-500 hover:opacity-75 cursor-pointer"
-                          title="Save"
-                        >
-                          <Check className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingId(null)}
-                          className="p-1 text-muted hover:text-text cursor-pointer"
-                          title="Cancel"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5 mb-1">
-                            <span
-                              className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                                m.source === 'manual'
-                                  ? 'bg-indigo-500/10 text-indigo-500'
-                                  : 'bg-emerald-500/10 text-emerald-500'
-                              }`}
-                            >
-                              {m.source}
-                            </span>
-                          </div>
-                          <p className="text-text break-words leading-relaxed">{m.text}</p>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingId(m.id);
-                              setEditingText(m.text);
-                            }}
-                            className="p-1 text-muted hover:text-text rounded hover:bg-surface2 cursor-pointer"
-                            title="Edit memory"
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteMemory(m.id)}
-                            className="p-1 text-muted hover:text-rose-500 rounded hover:bg-rose-500/10 cursor-pointer"
-                            title="Delete memory"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            <input type="text" placeholder="Search memories..." value={memorySearch} onChange={(e) => setMemorySearch(e.target.value)} className="w-full bg-surface2/60 border border-border rounded-xl px-3 py-2 text-xs" />
+            <button onClick={() => setShowDuplicates(!showDuplicates)} className="text-[11px] text-accent hover:underline cursor-pointer">
+              {showDuplicates ? 'Hide' : 'Check for'} potential duplicates
+            </button>
           </div>
 
-          {/* Clear all with confirm */}
-          {memories.length > 0 && (
-            <div className="pt-2 border-t border-border flex justify-end">
-              {confirmClear ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-rose-500 font-medium">Clear all memories?</span>
-                  <button
-                    type="button"
-                    onClick={handleClearAllMemories}
-                    className="px-3 py-1 rounded-lg bg-rose-500 text-white text-xs font-semibold hover:opacity-90 cursor-pointer"
-                  >
-                    Yes, clear all
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmClear(false)}
-                    className="px-3 py-1 rounded-lg bg-surface2 text-muted hover:text-text text-xs cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setConfirmClear(true)}
-                  className="text-xs text-muted hover:text-rose-500 transition-colors cursor-pointer"
-                >
-                  Clear all
+          {/* Grouped Memories */}
+          {['identity', 'preference', 'project', 'skill', 'other'].map((cat) => {
+            const catMemories = memories.filter((m) => m.category === cat && m.text.toLowerCase().includes(memorySearch.toLowerCase()));
+            if (catMemories.length === 0) return null;
+            return (
+              <div key={cat} className="space-y-2">
+                <button onClick={() => setExpandedCategories(prev => ({...prev, [cat]: !prev[cat]}))} className="flex items-center gap-2 text-xs font-semibold uppercase text-muted tracking-wider cursor-pointer">
+                  {expandedCategories[cat] ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                  {cat} ({catMemories.length})
                 </button>
-              )}
-            </div>
-          )}
+                {expandedCategories[cat] && (
+                  <div className="space-y-1.5 pl-4">
+                    {catMemories.map((m) => (
+                      <div key={m.id} className="p-2.5 rounded-lg bg-surface2/30 border border-border text-xs flex items-center justify-between gap-2">
+                        <span className="truncate flex-1">{m.text}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button onClick={() => handleTogglePin(m)} className={`p-1 rounded ${m.pinned ? 'text-accent' : 'text-muted'}`}><Pin className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => handleDeleteMemory(m.id)} className="p-1 rounded text-muted hover:text-rose-500"><Trash2 className="w-3.5 h-3.5" /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       ) : settingsTab === 'advanced' ? (
         <div className="space-y-4">

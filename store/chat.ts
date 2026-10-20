@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { db, ChatRow, MsgRow, FileRow } from '@/lib/db';
+import { db, ChatRow, MsgRow, FileRow, DocRow } from '@/lib/db';
 import { useKeysStore } from '@/store/keys';
 import { useUIStore } from '@/store/ui';
 import { decryptKey } from '@/lib/crypto';
@@ -263,6 +263,7 @@ async function runGeneration(chatId: string) {
     let accumulatedTools: { id: string; name: string; label: string; status: 'running' | 'done' | 'error'; detail?: string }[] = [];
     let accumulatedSources: { title: string; url: string }[] = [];
     let accumulatedArtifacts: { id: string; title: string; type: string; code: string }[] = [];
+    let accumulatedDocuments: { id: string; name: string; format: string; size: number }[] = [];
 
     const MAX_STEPS = wsId ? 25 : 6;
     let runSuccess = false;
@@ -481,10 +482,17 @@ async function runGeneration(chatId: string) {
           }
         }
 
+        if (r.document) {
+          if (!accumulatedDocuments.some((d) => d.id === r.document!.id)) {
+            accumulatedDocuments.push(r.document);
+          }
+        }
+
         await db.messages.update(assistantMsgId, {
           tools: [...accumulatedTools],
           sources: accumulatedSources.length > 0 ? accumulatedSources : undefined,
           artifacts: accumulatedArtifacts.length > 0 ? accumulatedArtifacts : undefined,
+          documents: accumulatedDocuments.length > 0 ? accumulatedDocuments : undefined,
         });
 
         useChatStore.setState((s) => ({
@@ -495,6 +503,7 @@ async function runGeneration(chatId: string) {
                   tools: [...accumulatedTools],
                   sources: accumulatedSources.length > 0 ? accumulatedSources : undefined,
                   artifacts: accumulatedArtifacts.length > 0 ? accumulatedArtifacts : undefined,
+                  documents: accumulatedDocuments.length > 0 ? accumulatedDocuments : undefined,
                 }
               : m
           ),
@@ -528,6 +537,7 @@ async function runGeneration(chatId: string) {
       tools: accumulatedTools.length > 0 ? accumulatedTools : undefined,
       sources: accumulatedSources.length > 0 ? accumulatedSources : undefined,
       artifacts: accumulatedArtifacts.length > 0 ? accumulatedArtifacts : undefined,
+      documents: accumulatedDocuments.length > 0 ? accumulatedDocuments : undefined,
       plan: currentPlan,
       needsContinue: reachedStepLimit ? true : undefined,
     });
@@ -552,6 +562,7 @@ async function runGeneration(chatId: string) {
               tools: accumulatedTools.length > 0 ? accumulatedTools : undefined,
               sources: accumulatedSources.length > 0 ? accumulatedSources : undefined,
               artifacts: accumulatedArtifacts.length > 0 ? accumulatedArtifacts : undefined,
+              documents: accumulatedDocuments.length > 0 ? accumulatedDocuments : undefined,
               plan: currentPlan,
               needsContinue: reachedStepLimit ? true : undefined,
             }
@@ -583,6 +594,7 @@ async function runGeneration(chatId: string) {
           model: freshChat?.model || selectedModel,
           userText: lastUser.content,
           assistantText: finalText,
+          projectId: freshChat?.projectId,
         });
 
         if (count > 0) {
@@ -785,6 +797,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await db.chats.delete(chatId);
     await db.messages.where('chatId').equals(chatId).delete();
     await db.files.where('chatId').equals(chatId).delete();
+    await db.docs.where('chatId').equals(chatId).delete();
 
     const remainingChats = get().chats.filter((c) => c.id !== chatId);
     let nextActiveId = get().activeChatId;
@@ -875,6 +888,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await db.messages.bulkDelete(toDeleteIds);
     if (toDeleteIds.length > 0) {
       await db.files.where('msgId').anyOf(toDeleteIds).delete();
+      await db.docs.where('msgId').anyOf(toDeleteIds).delete();
     }
     await db.messages.update(userMsgId, { content: newText.trim() });
 
@@ -899,6 +913,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (streaming || !activeChatId || last?.role !== 'assistant') return;
     await db.messages.delete(last.id);
     await db.files.where('msgId').equals(last.id).delete();
+    await db.docs.where('msgId').equals(last.id).delete();
     const updatedFilesMap = { ...filesByMsgId };
     delete updatedFilesMap[last.id];
 
@@ -926,11 +941,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     const newFiles: FileRow[] = [];
+    const newDocs: DocRow[] = [];
     for (const m of copy) {
       const oldFiles = filesByMsgId[m.oldId] || [];
       for (const f of oldFiles) {
         newFiles.push({
           ...f,
+          id: crypto.randomUUID(),
+          chatId: newId,
+          msgId: m.id,
+        });
+      }
+      const oldDocs = await db.docs.where('msgId').equals(m.oldId).toArray();
+      for (const d of oldDocs) {
+        newDocs.push({
+          ...d,
           id: crypto.randomUUID(),
           chatId: newId,
           msgId: m.id,
@@ -951,6 +976,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await db.messages.bulkPut(copy.map(({ oldId, ...rest }) => rest));
     if (newFiles.length > 0) {
       await db.files.bulkPut(newFiles);
+    }
+    if (newDocs.length > 0) {
+      await db.docs.bulkPut(newDocs);
     }
 
     set((s) => ({ chats: [row, ...s.chats] }));

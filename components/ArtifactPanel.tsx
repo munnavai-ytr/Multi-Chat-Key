@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { buildSrcDoc } from '@/lib/artifact';
+import { saveFile } from '@/lib/save-file';
 
 export function ArtifactPanel() {
   const { artifact, setArtifact } = useUIStore();
@@ -55,12 +56,7 @@ export function ArtifactPanel() {
 
     const filename = `artifact-${Date.now()}.${ext}`;
     const blob = new Blob([artifact.code], { type: `${mime};charset=utf-8` });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    saveFile(blob, filename).catch((err) => console.error('Failed to save artifact', err));
   };
 
   const handleRefresh = () => {

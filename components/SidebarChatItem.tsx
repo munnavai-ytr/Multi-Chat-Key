@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatRow } from '@/lib/db';
+import { ChatRow, db } from '@/lib/db';
+import { saveFile } from '@/lib/save-file';
+import { useUIStore } from '@/store/ui';
 import {
   MessageSquare,
   MoreVertical,
@@ -9,6 +11,7 @@ import {
   Pin,
   PinOff,
   Trash2,
+  Download,
 } from 'lucide-react';
 
 interface SidebarChatItemProps {
@@ -83,6 +86,26 @@ export const SidebarChatItem = React.memo(function SidebarChatItem({
       setEditTitle(chat.title);
     }
     setIsRenaming(false);
+  };
+
+  const handleExportMarkdown = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setMenuOpen(false);
+    try {
+      const msgs = await db.messages.where('chatId').equals(chat.id).sortBy('createdAt');
+      let md = `# ${chat.title || 'Chat'}\n\n`;
+      for (const m of msgs) {
+        const role = m.role === 'user' ? 'User' : 'Assistant';
+        const time = new Date(m.createdAt).toLocaleString();
+        md += `### ${role} (${time})\n\n${m.content}\n\n---\n\n`;
+      }
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const cleanTitle = (chat.title || 'chat').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
+      await saveFile(blob, `${cleanTitle || 'chat'}.md`);
+      useUIStore.getState().showToast('Chat exported to Markdown', 2000);
+    } catch (err) {
+      console.error('Failed to export chat', err);
+    }
   };
 
   const handleDelete = (e: React.MouseEvent) => {
@@ -188,6 +211,15 @@ export const SidebarChatItem = React.memo(function SidebarChatItem({
                     <span>Pin</span>
                   </>
                 )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportMarkdown}
+                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-text hover:bg-surface2 transition-colors text-left"
+              >
+                <Download className="w-3.5 h-3.5 text-muted" />
+                <span>Export (.md)</span>
               </button>
 
               <button

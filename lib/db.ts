@@ -54,6 +54,19 @@ export interface MsgRow {
   artifacts?: { id: string; title: string; type: string; code: string }[];
   plan?: { title: string; status: 'todo' | 'doing' | 'done' }[];
   needsContinue?: boolean;
+  documents?: { id: string; name: string; format: string; size: number }[];
+}
+
+export interface DocRow {
+  id: string;
+  chatId: string;
+  msgId: string;
+  name: string;
+  format: string;
+  mime: string;
+  size: number;
+  data: ArrayBuffer;
+  createdAt: number;
 }
 
 export interface FileRow {
@@ -118,6 +131,7 @@ class AppDB extends Dexie {
   workspaces!: Table<WorkspaceRow, string>;
   wsfiles!: Table<WSFileRow, [string, string]>;
   wscheckpoints!: Table<WSCheckpointRow, string>;
+  docs!: Table<DocRow, string>;
 
   constructor() {
     super('chatly');
@@ -145,6 +159,9 @@ class AppDB extends Dexie {
     });
     this.version(6).stores({
       memories: 'id,updatedAt,projectId',
+    });
+    this.version(7).stores({
+      docs: 'id,chatId,msgId',
     });
   }
 }

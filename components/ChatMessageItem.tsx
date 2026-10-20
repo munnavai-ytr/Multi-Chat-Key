@@ -2,9 +2,10 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { MsgRow, FileRow } from '@/lib/db';
+import { MsgRow, FileRow, db } from '@/lib/db';
 import { useChatStore } from '@/store/chat';
 import { formatFileSize } from '@/lib/files';
+import { saveFile } from '@/lib/save-file';
 import {
   Sparkles,
   AlertCircle,
@@ -145,25 +146,44 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
     onEditAndResend?.(message.id, trimmed);
   };
 
+  const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+
   const downloadFile = (file: FileRow) => {
-    if (file.kind === 'image' && file.b64) {
-      const a = document.createElement('a');
-      a.href = `data:${file.mime};base64,${file.b64}`;
-      a.download = file.name;
-      a.click();
-    } else if (file.kind === 'pdf' && file.b64) {
-      const a = document.createElement('a');
-      a.href = `data:${file.mime};base64,${file.b64}`;
-      a.download = file.name;
-      a.click();
+    if ((file.kind === 'image' || file.kind === 'pdf') && file.b64) {
+      try {
+        const byteCharacters = atob(file.b64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: file.mime });
+        saveFile(blob, file.name).catch((err) => console.error('Failed to save file', err));
+      } catch (err) {
+        console.error('Failed to decode base64 file', err);
+      }
     } else if (file.kind === 'text' && file.text) {
       const blob = new Blob([file.text], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name;
-      a.click();
-      URL.revokeObjectURL(url);
+      saveFile(blob, file.name).catch((err) => console.error('Failed to save file', err));
+    }
+  };
+
+  const downloadDocument = async (doc: { id: string; name: string; format: string; size: number }) => {
+    try {
+      setDownloadingDocId(doc.id);
+      const row = await db.docs.get(doc.id);
+      if (!row) {
+        useUIStore.getState().showToast('Document not found in database', 3000);
+        return;
+      }
+      const blob = new Blob([row.data], { type: row.mime || 'application/octet-stream' });
+      await saveFile(blob, row.name);
+      useUIStore.getState().showToast(`Saved ${row.name}`, 2000);
+    } catch (err: any) {
+      console.error('Failed to download document', err);
+      useUIStore.getState().showToast('Failed to save document: ' + String(err?.message || err), 3000);
+    } finally {
+      setDownloadingDocId(null);
     }
   };
 
@@ -554,6 +574,65 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
                 <span>Artifact: {art.title}</span>
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Generated Documents Cards */}
+        {message.documents && message.documents.length > 0 && (
+          <div className="mb-3 space-y-2">
+            {message.documents.map((doc) => {
+              const fmt = (doc.format || 'file').toLowerCase();
+              const isXlsx = fmt === 'xlsx' || fmt === 'csv';
+              const isPptx = fmt === 'pptx';
+              const isPdf = fmt === 'pdf';
+              const isDocx = fmt === 'docx';
+
+              const badgeColor = isDocx
+                ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30'
+                : isXlsx
+                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                : isPptx
+                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30'
+                : isPdf
+                ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30'
+                : 'bg-surface2 text-muted border-border';
+
+              return (
+                <div
+                  key={doc.id}
+                  className="flex items-center justify-between gap-3 p-3 rounded-xl bg-surface2/60 border border-border hover:border-accent/40 transition-all max-w-md"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div
+                      className={`px-2 py-1 rounded-md text-[10px] font-bold tracking-wider uppercase border shrink-0 ${badgeColor}`}
+                    >
+                      {fmt}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-text truncate" title={doc.name}>
+                        {doc.name}
+                      </div>
+                      <div className="text-[11px] text-muted">
+                        {formatFileSize(doc.size)}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => downloadDocument(doc)}
+                    disabled={downloadingDocId === doc.id}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-all cursor-pointer shadow-xs active:scale-95 disabled:opacity-50 shrink-0"
+                  >
+                    {downloadingDocId === doc.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5" />
+                    )}
+                    <span>Download</span>
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 

@@ -30,6 +30,9 @@ export async function getEnabledTools(chat?: { workspaceId?: string }): Promise<
   const fg = (await db.meta.get('tool:forget'))?.value ?? true;
   if (fg && TOOLS.forget) enabled.push(TOOLS.forget);
 
+  const cd = (await db.meta.get('tool:create_document'))?.value ?? true;
+  if (cd && TOOLS.create_document) enabled.push(TOOLS.create_document);
+
   if (chat?.workspaceId) {
     if (TOOLS.list_files) enabled.push(TOOLS.list_files);
     if (TOOLS.read_file) enabled.push(TOOLS.read_file);
@@ -50,7 +53,12 @@ export function toolLabel(c: { name: string; args: any }) {
   if (c.name === 'run_code') return `Running ${c.args?.language || 'code'}`;
   if (c.name === 'remember') return 'Saving to memory';
   if (c.name === 'search_chats') return `Searching chats: ${c.args?.query || ''}`;
-  if (c.name === 'forget') return 'Forgetting memory';
+  if (c.name === 'forget') return 'Forgetting';
+  if (c.name === 'create_document') {
+    const fmt = c.args?.format ? c.args.format.toUpperCase() : 'Document';
+    const name = c.args?.filename || 'document';
+    return `Creating ${fmt}: ${name}`;
+  }
   if (c.name === 'list_files') return 'Listing files';
   if (c.name === 'read_file') return `Reading ${c.args?.path || ''}`;
   if (c.name === 'search_code') return `Searching: ${c.args?.query || ''}`;
