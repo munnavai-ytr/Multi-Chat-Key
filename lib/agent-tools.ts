@@ -6,7 +6,7 @@ import { decryptKey } from './crypto';
 import { executeWsTool } from './ws-tools';
 import { recordChange } from './workspace';
 import { useUIStore } from '@/store/ui';
-import { buildDocument } from './doc-builders';
+import { buildDocument } from './docgen';
 
 export interface ToolCtx {
   chatId: string;
@@ -214,39 +214,50 @@ export async function executeTool(
     }
 
     if (call.name === 'create_document') {
-      const docResult = await buildDocument(call.args);
-      const docId = crypto.randomUUID();
-      const docRow: DocRow = {
-        id: docId,
-        chatId: ctx.chatId,
-        msgId: ctx.msgId,
-        name: docResult.name,
-        format: docResult.format,
-        mime: docResult.mime,
-        size: docResult.size,
-        data: docResult.data,
-        createdAt: Date.now(),
-      };
-      await db.docs.put(docRow);
+      try {
+        const { blob, name, mime } = await buildDocument(call.args);
+        const data = await blob.arrayBuffer();
+        const docId = crypto.randomUUID();
+        const format = (call.args?.format || 'file').toLowerCase();
+        const sizeKb = Math.max(1, Math.round(data.byteLength / 1024));
 
-      const docItem = {
-        id: docId,
-        name: docResult.name,
-        format: docResult.format,
-        size: docResult.size,
-      };
+        const docRow: DocRow = {
+          id: docId,
+          chatId: ctx.chatId,
+          msgId: ctx.msgId,
+          name,
+          format,
+          mime,
+          size: data.byteLength,
+          data,
+          createdAt: Date.now(),
+        };
+        await db.docs.put(docRow);
 
-      const existingMsg = await db.messages.get(ctx.msgId);
-      if (existingMsg) {
-        const nextDocs = [...(existingMsg.documents || []), docItem];
-        await db.messages.update(ctx.msgId, { documents: nextDocs });
+        const docItem = {
+          id: docId,
+          name,
+          format,
+          size: data.byteLength,
+        };
+
+        const existingMsg = await db.messages.get(ctx.msgId);
+        if (existingMsg) {
+          const nextDocs = [...(existingMsg.documents || []), docItem];
+          await db.messages.update(ctx.msgId, { documents: nextDocs });
+        }
+
+        return {
+          ok: true,
+          text: `Created ${name} (${sizeKb} KB). It is shown to the user as a download card.`,
+          document: docItem,
+        };
+      } catch (err: any) {
+        return {
+          ok: false,
+          text: `Document creation failed: ${String(err?.message || err)}. Please retry with simpler content or fewer blocks.`,
+        };
       }
-
-      return {
-        ok: true,
-        text: `Created document "${docResult.name}" (${docResult.format.toUpperCase()}, ${docResult.size} bytes). Download card is available.`,
-        document: docItem,
-      };
     }
 
     return { ok: false, text: 'Unknown tool.' };

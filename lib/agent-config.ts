@@ -55,9 +55,9 @@ export function toolLabel(c: { name: string; args: any }) {
   if (c.name === 'search_chats') return `Searching chats: ${c.args?.query || ''}`;
   if (c.name === 'forget') return 'Forgetting';
   if (c.name === 'create_document') {
-    const fmt = c.args?.format ? c.args.format.toUpperCase() : 'Document';
-    const name = c.args?.filename || 'document';
-    return `Creating ${fmt}: ${name}`;
+    const filename = c.args?.filename || 'document';
+    const format = c.args?.format || 'file';
+    return `Creating ${filename}.${format}`;
   }
   if (c.name === 'list_files') return 'Listing files';
   if (c.name === 'read_file') return `Reading ${c.args?.path || ''}`;

@@ -16,6 +16,11 @@ import {
   GitBranch,
   FileText,
   FileCode,
+  FileSpreadsheet,
+  Presentation,
+  Table,
+  Share2,
+  Eye,
   Download,
   X,
   ExternalLink,
@@ -147,6 +152,15 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   };
 
   const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+  const [loadingPreviewId, setLoadingPreviewId] = useState<string | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<{
+    id: string;
+    name: string;
+    format: string;
+    size: number;
+    content: string;
+  } | null>(null);
+  const [previewCopied, setPreviewCopied] = useState(false);
 
   const downloadFile = (file: FileRow) => {
     if ((file.kind === 'image' || file.kind === 'pdf') && file.b64) {
@@ -184,6 +198,45 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
       useUIStore.getState().showToast('Failed to save document: ' + String(err?.message || err), 3000);
     } finally {
       setDownloadingDocId(null);
+    }
+  };
+
+  const shareDocument = async (doc: { id: string; name: string; format: string; size: number }) => {
+    try {
+      const row = await db.docs.get(doc.id);
+      if (!row) {
+        useUIStore.getState().showToast('Document not found in database', 3000);
+        return;
+      }
+      const blob = new Blob([row.data], { type: row.mime || 'application/octet-stream' });
+      await saveFile(blob, row.name);
+    } catch (err: any) {
+      console.error('Failed to share document', err);
+      useUIStore.getState().showToast('Failed to share document', 3000);
+    }
+  };
+
+  const previewDocument = async (doc: { id: string; name: string; format: string; size: number }) => {
+    try {
+      setLoadingPreviewId(doc.id);
+      const row = await db.docs.get(doc.id);
+      if (!row) {
+        useUIStore.getState().showToast('Document not found in database', 3000);
+        return;
+      }
+      const text = new TextDecoder('utf-8').decode(row.data);
+      setPreviewDoc({
+        id: doc.id,
+        name: doc.name,
+        format: (doc.format || '').toLowerCase(),
+        size: doc.size,
+        content: text,
+      });
+    } catch (err: any) {
+      console.error('Failed to preview document', err);
+      useUIStore.getState().showToast('Could not preview document: ' + String(err?.message || err), 3000);
+    } finally {
+      setLoadingPreviewId(null);
     }
   };
 
@@ -582,54 +635,115 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
           <div className="mb-3 space-y-2">
             {message.documents.map((doc) => {
               const fmt = (doc.format || 'file').toLowerCase();
-              const isXlsx = fmt === 'xlsx' || fmt === 'csv';
+              const isXlsx = fmt === 'xlsx';
+              const isCsv = fmt === 'csv';
               const isPptx = fmt === 'pptx';
               const isPdf = fmt === 'pdf';
               const isDocx = fmt === 'docx';
+              const isMd = fmt === 'md';
+              const isTxt = fmt === 'txt';
+              const canPreview = isMd || isTxt || isCsv;
 
-              const badgeColor = isDocx
-                ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30'
-                : isXlsx
-                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                : isPptx
-                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30'
-                : isPdf
-                ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30'
-                : 'bg-surface2 text-muted border-border';
+              let IconComponent = FileText;
+              let badgeColor = 'bg-surface2 text-muted border-border';
+              let iconColor = 'text-muted';
+
+              if (isDocx) {
+                IconComponent = FileText;
+                badgeColor = 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30';
+                iconColor = 'text-blue-600 dark:text-blue-400';
+              } else if (isXlsx) {
+                IconComponent = FileSpreadsheet;
+                badgeColor = 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30';
+                iconColor = 'text-emerald-600 dark:text-emerald-400';
+              } else if (isCsv) {
+                IconComponent = Table;
+                badgeColor = 'bg-teal-500/15 text-teal-600 dark:text-teal-400 border-teal-500/30';
+                iconColor = 'text-teal-600 dark:text-teal-400';
+              } else if (isPptx) {
+                IconComponent = Presentation;
+                badgeColor = 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30';
+                iconColor = 'text-amber-600 dark:text-amber-400';
+              } else if (isPdf) {
+                IconComponent = FileText;
+                badgeColor = 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30';
+                iconColor = 'text-rose-600 dark:text-rose-400';
+              } else if (isMd) {
+                IconComponent = FileCode;
+                badgeColor = 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30';
+                iconColor = 'text-purple-600 dark:text-purple-400';
+              } else if (isTxt) {
+                IconComponent = FileText;
+                badgeColor = 'bg-slate-500/15 text-slate-600 dark:text-slate-400 border-slate-500/30';
+                iconColor = 'text-slate-500';
+              }
 
               return (
                 <div
                   key={doc.id}
-                  className="flex items-center justify-between gap-3 p-3 rounded-xl bg-surface2/60 border border-border hover:border-accent/40 transition-all max-w-md"
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-surface2/60 border border-border hover:border-accent/40 transition-all max-w-lg shadow-xs"
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div
-                      className={`px-2 py-1 rounded-md text-[10px] font-bold tracking-wider uppercase border shrink-0 ${badgeColor}`}
-                    >
-                      {fmt}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className={`p-2 rounded-lg bg-surface border border-border/80 shrink-0 ${iconColor}`}>
+                      <IconComponent className="w-5 h-5" />
                     </div>
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-text truncate" title={doc.name}>
-                        {doc.name}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider uppercase border shrink-0 ${badgeColor}`}>
+                          {fmt}
+                        </span>
+                        <span className="text-xs font-semibold text-text truncate" title={doc.name}>
+                          {doc.name}
+                        </span>
                       </div>
-                      <div className="text-[11px] text-muted">
+                      <div className="text-[11px] text-muted mt-0.5">
                         {formatFileSize(doc.size)}
                       </div>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => downloadDocument(doc)}
-                    disabled={downloadingDocId === doc.id}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-all cursor-pointer shadow-xs active:scale-95 disabled:opacity-50 shrink-0"
-                  >
-                    {downloadingDocId === doc.id ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Download className="w-3.5 h-3.5" />
+
+                  <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-auto">
+                    {canPreview && (
+                      <button
+                        type="button"
+                        onClick={() => previewDocument(doc)}
+                        disabled={loadingPreviewId === doc.id}
+                        title="Preview file"
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-surface hover:bg-surface2 text-text border border-border text-xs font-medium transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+                      >
+                        {loadingPreviewId === doc.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Eye className="w-3.5 h-3.5" />
+                        )}
+                        <span>Preview</span>
+                      </button>
                     )}
-                    <span>Download</span>
-                  </button>
+
+                    <button
+                      type="button"
+                      onClick={() => downloadDocument(doc)}
+                      disabled={downloadingDocId === doc.id}
+                      title="Download or save file"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-all cursor-pointer shadow-xs active:scale-95 disabled:opacity-50"
+                    >
+                      {downloadingDocId === doc.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Download className="w-3.5 h-3.5" />
+                      )}
+                      <span>Download</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => shareDocument(doc)}
+                      title="Share file"
+                      className="p-1.5 rounded-lg bg-surface hover:bg-surface2 text-muted hover:text-text border border-border text-xs transition-all cursor-pointer active:scale-95"
+                    >
+                      <Share2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -757,6 +871,131 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
                 {message.usage.in + message.usage.out} tokens
               </span>
             )}
+          </div>
+        )}
+
+        {/* Document Preview Modal for md/txt/csv */}
+        {previewDoc && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/60 backdrop-blur-xs"
+            onClick={() => setPreviewDoc(null)}
+          >
+            <div
+              className="w-full max-w-3xl max-h-[85vh] rounded-2xl bg-surface border border-border shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between p-4 border-b border-border bg-surface2/40">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-accent/15 text-accent border border-accent/30">
+                    {previewDoc.format}
+                  </span>
+                  <h3 className="text-sm font-semibold text-text truncate" title={previewDoc.name}>
+                    {previewDoc.name}
+                  </h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(previewDoc.content);
+                      setPreviewCopied(true);
+                      setTimeout(() => setPreviewCopied(false), 2000);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-surface hover:bg-surface2 text-text border border-border text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {previewCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{previewCopied ? 'Copied' : 'Copy'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadDocument(previewDoc)}
+                    className="px-2.5 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewDoc(null)}
+                    className="p-1.5 rounded-lg text-muted hover:text-text hover:bg-surface2 transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-4 sm:p-5 overflow-y-auto flex-1 text-text">
+                {previewDoc.format === 'csv' ? (
+                  (() => {
+                    const lines = previewDoc.content.trim().split(/\r?\n/);
+                    if (!lines.length || !lines[0].trim()) {
+                      return <p className="text-xs text-muted">Empty CSV</p>;
+                    }
+                    const parseLine = (l: string) => {
+                      const row: string[] = [];
+                      let c = '';
+                      let inQ = false;
+                      for (let i = 0; i < l.length; i++) {
+                        const ch = l[i];
+                        if (ch === '"') {
+                          if (inQ && l[i + 1] === '"') {
+                            c += '"';
+                            i++;
+                          } else {
+                            inQ = !inQ;
+                          }
+                        } else if (ch === ',' && !inQ) {
+                          row.push(c.trim());
+                          c = '';
+                        } else {
+                          c += ch;
+                        }
+                      }
+                      row.push(c.trim());
+                      return row;
+                    };
+                    const headers = parseLine(lines[0]);
+                    const rows = lines.slice(1).map(parseLine);
+                    return (
+                      <div className="overflow-x-auto border border-border rounded-xl">
+                        <table className="w-full text-xs text-left border-collapse">
+                          <thead className="bg-surface2/80 text-text font-semibold sticky top-0 border-b border-border">
+                            <tr>
+                              {headers.map((h, i) => (
+                                <th key={i} className="p-3 border-r border-border/50 last:border-r-0 whitespace-nowrap">
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border/50">
+                            {rows.map((row, rIdx) => (
+                              <tr key={rIdx} className={rIdx % 2 === 1 ? 'bg-surface2/30' : 'bg-surface'}>
+                                {row.map((cell, cIdx) => (
+                                  <td key={cIdx} className="p-2.5 border-r border-border/40 last:border-r-0 whitespace-nowrap">
+                                    {cell}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()
+                ) : previewDoc.format === 'md' ? (
+                  <div className="p-4 rounded-xl bg-surface2/30 border border-border">
+                    <Markdown content={previewDoc.content} />
+                  </div>
+                ) : (
+                  <pre className="p-4 rounded-xl bg-surface2/40 border border-border font-mono text-xs whitespace-pre-wrap leading-relaxed text-text">
+                    {previewDoc.content}
+                  </pre>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>

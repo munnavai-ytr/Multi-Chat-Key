@@ -36,7 +36,7 @@ import { useKeysStore } from '@/store/keys';
 import { useChatStore } from '@/store/chat';
 import { ProviderId, detectProvider, listModels } from '@/lib/providers';
 import { encryptKey, decryptKey } from '@/lib/crypto';
-import { db, KeyRow, MemoryRow } from '@/lib/db';
+import { db, KeyRow, MemoryRow, DocRow } from '@/lib/db';
 import { webSearch } from '@/lib/search';
 import { storageInfo, requestPersistence } from '@/lib/storage';
 import { similar, rebuildProfile } from '@/lib/memory';
@@ -136,6 +136,50 @@ export function SettingsModal() {
     setStorageUsage(info.usage);
     setStorageQuota(info.quota);
     setIsCheckingStorage(false);
+  };
+
+  const [generatedDocs, setGeneratedDocs] = useState<DocRow[]>([]);
+  const [includeAttachments, setIncludeAttachments] = useState(true);
+
+  const loadGeneratedDocs = async () => {
+    try {
+      const docs = await db.docs.toArray();
+      docs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setGeneratedDocs(docs);
+    } catch (err) {
+      console.error('Failed to load generated docs', err);
+    }
+  };
+
+  const handleDeleteDoc = async (id: string) => {
+    try {
+      await db.docs.delete(id);
+      setGeneratedDocs((prev) => prev.filter((d) => d.id !== id));
+      useUIStore.getState().showToast('Document deleted', 2000);
+    } catch (err) {
+      console.error('Failed to delete doc', err);
+    }
+  };
+
+  const handleClearAllDocs = async () => {
+    if (!confirm('Delete all generated documents?')) return;
+    try {
+      await db.docs.clear();
+      setGeneratedDocs([]);
+      useUIStore.getState().showToast('All generated documents deleted', 2000);
+    } catch (err) {
+      console.error('Failed to clear docs', err);
+    }
+  };
+
+  const handleDownloadDoc = async (doc: DocRow) => {
+    try {
+      const blob = new Blob([doc.data], { type: doc.mime || 'application/octet-stream' });
+      await saveFile(blob, doc.name);
+      useUIStore.getState().showToast(`Saved ${doc.name}`, 2000);
+    } catch (err) {
+      console.error('Failed to save doc', err);
+    }
   };
 
   // AI Tools state
@@ -280,6 +324,7 @@ export function SettingsModal() {
     if (settingsOpen && settingsTab === 'data') {
       const timer = setTimeout(() => {
         refreshStorage();
+        loadGeneratedDocs();
       }, 0);
       return () => clearTimeout(timer);
     }
@@ -1694,15 +1739,94 @@ export function SettingsModal() {
             </div>
           </div>
 
+          {/* Generated files list */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-semibold text-text uppercase tracking-wider">
+                Generated files ({generatedDocs.length})
+              </h4>
+              {generatedDocs.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearAllDocs}
+                  className="text-[11px] text-rose-500 hover:text-rose-600 transition-colors cursor-pointer"
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+
+            {generatedDocs.length === 0 ? (
+              <div className="p-3.5 rounded-xl bg-surface2/40 border border-border text-center text-xs text-muted">
+                No generated documents stored yet.
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                {generatedDocs.map((doc) => {
+                  const fmt = (doc.format || 'file').toUpperCase();
+                  return (
+                    <div
+                      key={doc.id}
+                      className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-surface2/60 border border-border text-xs"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-accent/15 text-accent border border-accent/30 shrink-0">
+                          {fmt}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="font-medium text-text truncate max-w-[180px] sm:max-w-[240px]" title={doc.name}>
+                            {doc.name}
+                          </p>
+                          <p className="text-[10px] text-muted">
+                            {formatBytes(doc.size)} • {new Date(doc.createdAt).toLocaleDateString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadDoc(doc)}
+                          title="Download / Save"
+                          className="p-1.5 rounded-lg bg-surface hover:bg-surface2 text-muted hover:text-text border border-border transition-colors cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDoc(doc.id)}
+                          title="Delete document"
+                          className="p-1.5 rounded-lg text-rose-500 hover:text-rose-600 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="space-y-3">
             <h4 className="text-xs font-semibold text-text uppercase tracking-wider">Backup & Reset</h4>
+            
+            <label className="flex items-center gap-2 text-xs text-text cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={includeAttachments}
+                onChange={(e) => setIncludeAttachments(e.target.checked)}
+                className="rounded border-border text-accent focus:ring-accent"
+              />
+              <span>Include attachments (files and generated documents)</span>
+            </label>
+
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => exportAll(true)}
+                onClick={() => exportAll(includeAttachments)}
                 className="flex-1 px-3 py-2 rounded-lg bg-surface2 hover:bg-border text-xs font-medium text-text transition-colors cursor-pointer"
               >
-                Export All (w/ attachments)
+                Export Data {includeAttachments ? '(w/ attachments)' : ''}
               </button>
               <input
                 type="file"
@@ -1714,6 +1838,7 @@ export function SettingsModal() {
                   if (!file) return;
                   try {
                     const result = await importAll(file);
+                    await loadGeneratedDocs();
                     alert(`Imported ${result.chats} chats, ${result.messages} messages.`);
                   } catch (e: any) {
                     alert(`Import failed: ${e.message}`);
