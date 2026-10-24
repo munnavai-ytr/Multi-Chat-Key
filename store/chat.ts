@@ -151,6 +151,11 @@ async function runGeneration(chatId: string) {
   let lastCheckpoint = Date.now();
   let checkpointId: string | undefined;
 
+  let accumulatedThinking = '';
+  let thinkingStartTime: number | null = null;
+  let thinkingEndTime: number | null = null;
+  let thinkingRafPending = false;
+
   try {
     const plainApiKey = await decryptKey({ iv: keyRow.iv, ct: keyRow.ct });
 
@@ -264,10 +269,6 @@ async function runGeneration(chatId: string) {
     let accumulatedSources: { id?: number; title: string; url: string }[] = [];
     let accumulatedArtifacts: { id: string; title: string; type: string; code: string }[] = [];
     let accumulatedDocuments: { id: string; name: string; format: string; size: number }[] = [];
-    let accumulatedThinking = '';
-    let thinkingStartTime: number | null = null;
-    let thinkingEndTime: number | null = null;
-    let thinkingRafPending = false;
     const thinkingLevel =
       ((await db.meta.get('thinkingLevel'))?.value as 'off' | 'auto' | 'high') || 'auto';
 
