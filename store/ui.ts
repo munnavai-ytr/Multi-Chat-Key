@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { db } from '@/lib/db';
 
-export type SettingsTabId = 'keys' | 'search' | 'memory' | 'usage' | 'data' | 'tools' | 'advanced';
+export type SettingsTabId = 'keys' | 'search' | 'memory' | 'usage' | 'data' | 'tools' | 'voice' | 'advanced';
 
 interface ToastAction {
   label: string;
@@ -42,6 +42,10 @@ interface UIState {
   setAutoApplyTask: (auto: boolean) => void;
   requestApproval: (change: { path: string; before: string | null; after: string | null }) => Promise<boolean>;
   resolveApproval: (ok: boolean, autoApplyRest?: boolean) => void;
+  currentlySpeakingMsgId: string | null;
+  setCurrentlySpeakingMsgId: (id: string | null) => void;
+  handsFreeMode: boolean;
+  setHandsFreeMode: (val: boolean) => void;
 }
 
 let toastTimer: any = null;
@@ -110,4 +114,8 @@ export const useUIStore = create<UIState>((set, get) => ({
       set({ approval: null });
     }
   },
+  currentlySpeakingMsgId: null,
+  setCurrentlySpeakingMsgId: (id) => set({ currentlySpeakingMsgId: id }),
+  handsFreeMode: false,
+  setHandsFreeMode: (val) => set({ handsFreeMode: val }),
 }));

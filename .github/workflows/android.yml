@@ -21,9 +21,18 @@ jobs:
         run: rm -rf app/api
       - name: Build static web app
         run: npm run build:android
-      - name: Add Android platform if missing and sync
+      - name: Add Android platform if missing and configure voice permissions
         run: |
           [ -d android ] || npx cap add android
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            if ! grep -q "android.permission.RECORD_AUDIO" "$MANIFEST"; then
+              sed -i '/<manifest/a \    <uses-permission android:name="android.permission.RECORD_AUDIO" />' "$MANIFEST"
+            fi
+            if ! grep -q "RecognitionService" "$MANIFEST"; then
+              sed -i '/<\/manifest>/i \    <queries>\n        <intent>\n            <action android:name="android.speech.RecognitionService" />\n        </intent>\n    </queries>' "$MANIFEST"
+            fi
+          fi
           npx cap sync android
       - name: Build debug APK
         run: |

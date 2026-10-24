@@ -32,8 +32,12 @@ import {
   ListTodo,
   Play,
   Loader2,
+  Square,
+  Volume2,
 } from 'lucide-react';
 import { Markdown } from './Markdown';
+import { ThinkingBlock } from './ThinkingBlock';
+import { speak, stopSpeaking } from '@/lib/voice';
 import { useUIStore } from '@/store/ui';
 
 function ToolChipsList({
@@ -116,6 +120,38 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   // Files attached to this message
   const files = useChatStore((s) => s.filesByMsgId[message.id]) || [];
   const isSearchingWeb = useChatStore((s) => s.isSearchingWeb && s.streamingMsgId === message.id);
+
+  const currentlySpeakingMsgId = useUIStore((s) => s.currentlySpeakingMsgId);
+  const setCurrentlySpeakingMsgId = useUIStore((s) => s.setCurrentlySpeakingMsgId);
+  const isSpeaking = currentlySpeakingMsgId === message.id;
+
+  const handleToggleSpeak = async () => {
+    if (isSpeaking) {
+      stopSpeaking();
+      setCurrentlySpeakingMsgId(null);
+      return;
+    }
+    stopSpeaking();
+    setCurrentlySpeakingMsgId(message.id);
+    try {
+      const voiceLang = (await db.meta.get('voiceLang'))?.value || 'auto';
+      const lang =
+        voiceLang === 'auto'
+          ? /[\u0980-\u09FF]/.test(message.content)
+            ? 'bn-BD'
+            : /[\u0900-\u097F]/.test(message.content)
+            ? 'hi-IN'
+            : 'en-US'
+          : voiceLang;
+      await speak(message.content, lang);
+    } catch (err) {
+      console.error('Speech error', err);
+    } finally {
+      if (useUIStore.getState().currentlySpeakingMsgId === message.id) {
+        setCurrentlySpeakingMsgId(null);
+      }
+    }
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -750,6 +786,14 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
           </div>
         )}
 
+        {/* Thinking Block */}
+        <ThinkingBlock
+          thinking={message.thinking}
+          thinkingMs={message.thinkingMs}
+          isStreaming={isStreaming}
+          hasContent={hasContent}
+        />
+
         {/* Rich Markdown content */}
         {hasContent && <Markdown content={message.content} isStreaming={isStreaming} />}
 
@@ -825,9 +869,9 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
           </div>
         )}
 
-        {/* Assistant message actions: Copy, Regenerate (last message only), Branch */}
+        {/* Assistant message actions: Copy, Read Aloud, Regenerate (last message only), Branch */}
         {hasContent && !isStreaming && (
-          <div className="flex items-center gap-1 mt-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+          <div className={`flex items-center gap-1 mt-2 transition-opacity ${isSpeaking ? 'opacity-100' : 'opacity-100 md:opacity-0 md:group-hover:opacity-100'}`}>
             <button
               type="button"
               onClick={handleCopy}
@@ -839,6 +883,24 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
                 <Check className="w-3.5 h-3.5 text-emerald-500" />
               ) : (
                 <Copy className="w-3.5 h-3.5" />
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleToggleSpeak}
+              aria-label={isSpeaking ? 'Stop speaking' : 'Read aloud'}
+              title={isSpeaking ? 'Stop speaking' : 'Read aloud'}
+              className={`p-1 rounded-md transition-colors cursor-pointer ${
+                isSpeaking
+                  ? 'text-rose-500 bg-rose-500/10 animate-pulse'
+                  : 'text-muted hover:text-text hover:bg-surface2'
+              }`}
+            >
+              {isSpeaking ? (
+                <Square className="w-3.5 h-3.5 fill-current" />
+              ) : (
+                <Volume2 className="w-3.5 h-3.5" />
               )}
             </button>
 

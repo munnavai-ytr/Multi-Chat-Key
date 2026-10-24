@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
-import { Menu, Folder, Ghost, Sparkles, WifiOff } from 'lucide-react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { Menu, Folder, Ghost, Sparkles, WifiOff, Headphones, Square } from 'lucide-react';
 import { App } from '@capacitor/app';
 import { isNative } from '@/lib/transport';
 import { useOnline } from '@/hooks/use-online';
@@ -9,6 +9,8 @@ import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
 import { useChatStore } from '@/store/chat';
 import { useProjectsStore } from '@/store/projects';
+import { startListening, speak, stopSpeaking } from '@/lib/voice';
+import { db } from '@/lib/db';
 import { Sidebar } from './Sidebar';
 import { ThemeToggle } from './ThemeToggle';
 import { ChatMessagesList } from './ChatMessagesList';
@@ -24,8 +26,17 @@ import { CodeConfirmModal } from './CodeConfirmModal';
 
 export function AppShell() {
   const isOnline = useOnline();
-  const { sidebarOpen, setSidebarOpen, activeView, setActiveView, toastMessage, toastAction } =
-    useUIStore();
+  const {
+    sidebarOpen,
+    setSidebarOpen,
+    activeView,
+    setActiveView,
+    toastMessage,
+    toastAction,
+    showToast,
+    handsFreeMode,
+    setHandsFreeMode,
+  } = useUIStore();
   const { loadKeys, checkKeysHealth } = useKeysStore();
   const {
     loadChats,
@@ -37,6 +48,141 @@ export function AppShell() {
     setDraftIncognito,
   } = useChatStore();
   const { activeProjectId, projects, selectProject, loadProjects } = useProjectsStore();
+
+  const [handsFreeStatus, setHandsFreeStatus] = useState<
+    'listening' | 'thinking' | 'speaking' | 'idle'
+  >('idle');
+  const [handsFreeTranscript, setHandsFreeTranscript] = useState('');
+  const handsFreeActiveRef = useRef(false);
+  const stopListeningRef = useRef<(() => Promise<void> | void) | null>(null);
+
+  const stopHandsFree = useCallback(() => {
+    handsFreeActiveRef.current = false;
+    setHandsFreeMode(false);
+    setHandsFreeStatus('idle');
+    setHandsFreeTranscript('');
+    if (stopListeningRef.current) {
+      stopListeningRef.current();
+      stopListeningRef.current = null;
+    }
+    stopSpeaking();
+  }, [setHandsFreeMode]);
+
+  useEffect(() => {
+    handsFreeActiveRef.current = handsFreeMode;
+    if (!handsFreeMode) {
+      if (stopListeningRef.current) {
+        stopListeningRef.current();
+        stopListeningRef.current = null;
+      }
+      stopSpeaking();
+      setHandsFreeStatus('idle');
+      setHandsFreeTranscript('');
+    }
+  }, [handsFreeMode]);
+
+  const runHandsFreeListenStep = useCallback(async () => {
+    if (!handsFreeActiveRef.current) return;
+
+    const { keys, selectedKeyId, selectedModel } = useKeysStore.getState();
+    if (!selectedKeyId || !selectedModel || keys.length === 0) {
+      showToast('Add an API key and select a model first', 3000);
+      stopHandsFree();
+      return;
+    }
+
+    setHandsFreeStatus('listening');
+    setHandsFreeTranscript('');
+
+    const voiceLang = (await db.meta.get('voiceLang'))?.value || 'auto';
+    const lang = voiceLang === 'auto' ? 'en-US' : voiceLang;
+
+    try {
+      const cleanup = await startListening({
+        lang,
+        onPartial: (t) => {
+          if (!handsFreeActiveRef.current) return;
+          setHandsFreeTranscript(t);
+        },
+        onFinal: async (finalText) => {
+          if (!handsFreeActiveRef.current) return;
+          if (stopListeningRef.current) {
+            stopListeningRef.current = null;
+          }
+          const text = finalText.trim();
+          if (!text) {
+            setTimeout(() => {
+              if (handsFreeActiveRef.current) runHandsFreeListenStep();
+            }, 600);
+            return;
+          }
+
+          setHandsFreeTranscript(text);
+          setHandsFreeStatus('thinking');
+
+          await useChatStore.getState().sendMessage(text);
+
+          const checkStreamEnd = () => {
+            return new Promise<string>((resolve) => {
+              const unsubscribe = useChatStore.subscribe((state, prevState) => {
+                if (prevState.streaming && !state.streaming) {
+                  unsubscribe();
+                  const msgs = state.messages;
+                  const lastAsst = [...msgs].reverse().find((m) => m.role === 'assistant');
+                  resolve(lastAsst?.content || '');
+                }
+              });
+            });
+          };
+
+          const replyText = await checkStreamEnd();
+          if (!handsFreeActiveRef.current) return;
+
+          if (replyText.trim()) {
+            setHandsFreeStatus('speaking');
+            const detectedLang =
+              voiceLang === 'auto'
+                ? /[\u0980-\u09FF]/.test(replyText)
+                  ? 'bn-BD'
+                  : /[\u0900-\u097F]/.test(replyText)
+                  ? 'hi-IN'
+                  : 'en-US'
+                : voiceLang;
+
+            await speak(replyText, detectedLang);
+          }
+
+          if (handsFreeActiveRef.current) {
+            setTimeout(() => {
+              if (handsFreeActiveRef.current) {
+                runHandsFreeListenStep();
+              }
+            }, 400);
+          }
+        },
+        onError: (err) => {
+          if (!handsFreeActiveRef.current) return;
+          showToast(`Voice error: ${err}`, 3000);
+          stopHandsFree();
+        },
+      });
+
+      stopListeningRef.current = cleanup;
+    } catch (err: any) {
+      showToast(err?.message || 'Could not start voice recognition', 3000);
+      stopHandsFree();
+    }
+  }, [showToast, stopHandsFree]);
+
+  const toggleHandsFree = useCallback(() => {
+    if (handsFreeMode) {
+      stopHandsFree();
+    } else {
+      setHandsFreeMode(true);
+      handsFreeActiveRef.current = true;
+      runHandsFreeListenStep();
+    }
+  }, [handsFreeMode, stopHandsFree, setHandsFreeMode, runHandsFreeListenStep]);
 
   useEffect(() => {
     // Load keys, chats, and projects on app open
@@ -51,6 +197,10 @@ export function AppShell() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+      if (e.key === 'Escape' && useUIStore.getState().handsFreeMode) {
+        stopHandsFree();
+        return;
+      }
       if (isCmdOrCtrl && e.shiftKey && (e.key === 'O' || e.key === 'o')) {
         e.preventDefault();
         useChatStore.getState().newChat();
@@ -94,6 +244,12 @@ export function AppShell() {
         sidebarOpen,
         setSidebarOpen,
       } = useUIStore.getState();
+
+      // 0. Hands-free mode
+      if (useUIStore.getState().handsFreeMode) {
+        stopHandsFree();
+        return;
+      }
 
       // 1. Modals
       if (approval) {
@@ -215,6 +371,19 @@ export function AppShell() {
           <div className="shrink-0 flex items-center gap-1">
             <button
               type="button"
+              onClick={toggleHandsFree}
+              aria-label={handsFreeMode ? 'Stop hands-free mode' : 'Start hands-free voice mode'}
+              title={handsFreeMode ? 'Stop hands-free voice mode' : 'Start hands-free voice mode'}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all cursor-pointer ${
+                handsFreeMode
+                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 ring-2 ring-emerald-500/20 animate-pulse'
+                  : 'text-muted hover:text-text hover:bg-surface2'
+              }`}
+            >
+              <Headphones className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
               onClick={handleToggleIncognito}
               aria-label={isIncognito ? 'Incognito mode on (memory paused)' : 'Turn on incognito mode'}
               title={isIncognito ? 'Incognito mode on (memory paused)' : 'Turn on incognito mode'}
@@ -236,6 +405,20 @@ export function AppShell() {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={toggleHandsFree}
+              aria-label={handsFreeMode ? 'Stop hands-free mode' : 'Start hands-free voice mode'}
+              title={handsFreeMode ? 'Stop hands-free voice mode' : 'Start hands-free voice mode'}
+              className={`px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer border ${
+                handsFreeMode
+                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 ring-2 ring-emerald-500/20 animate-pulse'
+                  : 'border-transparent text-muted hover:text-text hover:bg-surface2'
+              }`}
+            >
+              <Headphones className="w-4 h-4" />
+              <span>{handsFreeMode ? 'Voice Mode On' : 'Voice Mode'}</span>
+            </button>
+            <button
+              type="button"
               onClick={handleToggleIncognito}
               aria-label={isIncognito ? 'Incognito mode on (memory paused)' : 'Turn on incognito mode'}
               title={isIncognito ? 'Incognito mode on (memory paused)' : 'Turn on incognito mode'}
@@ -251,6 +434,41 @@ export function AppShell() {
             <ThemeToggle />
           </div>
         </header>
+
+        {/* Hands-Free Voice Mode Active Floating Bar */}
+        {handsFreeMode && (
+          <div className="bg-emerald-500/15 border-b border-emerald-500/30 px-4 py-2 flex items-center justify-between text-xs text-emerald-700 dark:text-emerald-300 font-medium shrink-0 animate-in fade-in duration-150">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="relative flex h-2.5 w-2.5 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+              </span>
+              <div className="flex items-center gap-1.5 truncate">
+                <Headphones className="w-3.5 h-3.5 shrink-0" />
+                <span className="font-semibold shrink-0">Hands-free voice mode active:</span>
+                <span className="text-muted dark:text-emerald-200 truncate">
+                  {handsFreeStatus === 'listening'
+                    ? handsFreeTranscript
+                      ? `"${handsFreeTranscript}"`
+                      : 'Listening for speech...'
+                    : handsFreeStatus === 'thinking'
+                    ? 'AI is generating reply...'
+                    : handsFreeStatus === 'speaking'
+                    ? 'Speaking response...'
+                    : 'Ready'}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={stopHandsFree}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500 text-white text-xs font-semibold hover:bg-rose-600 transition-colors cursor-pointer shrink-0 ml-2 shadow-xs"
+            >
+              <Square className="w-3 h-3 fill-current" />
+              <span>Stop</span>
+            </button>
+          </div>
+        )}
 
         {/* Offline Banner */}
         {!isOnline && (

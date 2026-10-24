@@ -264,6 +264,12 @@ async function runGeneration(chatId: string) {
     let accumulatedSources: { title: string; url: string }[] = [];
     let accumulatedArtifacts: { id: string; title: string; type: string; code: string }[] = [];
     let accumulatedDocuments: { id: string; name: string; format: string; size: number }[] = [];
+    let accumulatedThinking = '';
+    let thinkingStartTime: number | null = null;
+    let thinkingEndTime: number | null = null;
+    let thinkingRafPending = false;
+    const thinkingLevel =
+      ((await db.meta.get('thinkingLevel'))?.value as 'off' | 'auto' | 'high') || 'auto';
 
     const MAX_STEPS = wsId ? 25 : 6;
     let runSuccess = false;
@@ -289,6 +295,7 @@ async function runGeneration(chatId: string) {
     for (let step = 0; step < MAX_STEPS; step++) {
       const calls: ToolCall[] = [];
       let stepText = '';
+      let stepThinkingBlocks: any[] = [];
 
       // Tool-result compaction: before each model call when total characters of convo exceed 150,000,
       // replace the content of all but the latest 6 tool messages with "[older tool output omitted]".
@@ -315,11 +322,32 @@ async function runGeneration(chatId: string) {
           messages: convo,
           tools: effectiveTools,
           signal: controller.signal,
+          thinkingLevel,
         });
 
         for await (const ev of stream) {
           if (controller.signal.aborted) break;
-          if (ev.type === 'text') {
+          if (ev.type === 'thinking') {
+            if (!thinkingStartTime) {
+              thinkingStartTime = Date.now();
+            }
+            accumulatedThinking += ev.text;
+            if (!thinkingRafPending) {
+              thinkingRafPending = true;
+              requestAnimationFrame(() => {
+                thinkingRafPending = false;
+                const thinkToFlush = accumulatedThinking;
+                useChatStore.setState((state) => ({
+                  messages: state.messages.map((m) =>
+                    m.id === assistantMsgId ? { ...m, thinking: thinkToFlush } : m
+                  ),
+                }));
+              });
+            }
+          } else if (ev.type === 'text') {
+            if (thinkingStartTime && !thinkingEndTime) {
+              thinkingEndTime = Date.now();
+            }
             stepText += ev.text;
             accumulatedTextBuffer += ev.text;
             if (!rafPending) {
@@ -338,6 +366,10 @@ async function runGeneration(chatId: string) {
             calls.push(ev.call);
           } else if (ev.type === 'usage') {
             finalUsage = ev;
+          } else if (ev.type === 'assistant_meta') {
+            if (ev.thinkingBlocks) {
+              stepThinkingBlocks = ev.thinkingBlocks;
+            }
           }
         }
         runSuccess = true;
@@ -385,11 +417,32 @@ async function runGeneration(chatId: string) {
             messages: fallbackMessages,
             tools: [],
             signal: controller.signal,
+            thinkingLevel,
           });
 
           for await (const ev of fallbackStream) {
             if (controller.signal.aborted) break;
-            if (ev.type === 'text') {
+            if (ev.type === 'thinking') {
+              if (!thinkingStartTime) {
+                thinkingStartTime = Date.now();
+              }
+              accumulatedThinking += ev.text;
+              if (!thinkingRafPending) {
+                thinkingRafPending = true;
+                requestAnimationFrame(() => {
+                  thinkingRafPending = false;
+                  const thinkToFlush = accumulatedThinking;
+                  useChatStore.setState((state) => ({
+                    messages: state.messages.map((m) =>
+                      m.id === assistantMsgId ? { ...m, thinking: thinkToFlush } : m
+                    ),
+                  }));
+                });
+              }
+            } else if (ev.type === 'text') {
+              if (thinkingStartTime && !thinkingEndTime) {
+                thinkingEndTime = Date.now();
+              }
               stepText += ev.text;
               accumulatedTextBuffer += ev.text;
               if (!rafPending) {
@@ -422,7 +475,12 @@ async function runGeneration(chatId: string) {
       }
 
       accumulatedTextBuffer += '\n\n';
-      convo.push({ role: 'assistant', content: stepText, toolCalls: calls });
+      convo.push({
+        role: 'assistant',
+        content: stepText,
+        toolCalls: calls,
+        thinkingBlocks: stepThinkingBlocks.length > 0 ? stepThinkingBlocks : undefined,
+      });
 
       for (const c of calls) {
         const tItem = {
@@ -529,6 +587,14 @@ async function runGeneration(chatId: string) {
     }
 
     const finalText = accumulatedTextBuffer;
+    if (thinkingStartTime && !thinkingEndTime) {
+      thinkingEndTime = Date.now();
+    }
+    const finalThinkingMs =
+      thinkingStartTime && thinkingEndTime
+        ? Math.max(100, thinkingEndTime - thinkingStartTime)
+        : undefined;
+
     await db.messages.update(assistantMsgId, {
       content: finalText,
       usage: finalUsage,
@@ -540,6 +606,8 @@ async function runGeneration(chatId: string) {
       documents: accumulatedDocuments.length > 0 ? accumulatedDocuments : undefined,
       plan: currentPlan,
       needsContinue: reachedStepLimit ? true : undefined,
+      thinking: accumulatedThinking || undefined,
+      thinkingMs: finalThinkingMs,
     });
     await db.chats.update(chatId, { updatedAt: Date.now() });
 
@@ -565,10 +633,29 @@ async function runGeneration(chatId: string) {
               documents: accumulatedDocuments.length > 0 ? accumulatedDocuments : undefined,
               plan: currentPlan,
               needsContinue: reachedStepLimit ? true : undefined,
+              thinking: accumulatedThinking || undefined,
+              thinkingMs: finalThinkingMs,
             }
           : m
       ),
     }));
+
+    try {
+      const autoRead = (await db.meta.get('voiceAutoRead'))?.value === true;
+      if (autoRead && finalText.trim()) {
+        const voiceLang = (await db.meta.get('voiceLang'))?.value || 'auto';
+        const lang =
+          voiceLang === 'auto'
+            ? /[\u0980-\u09FF]/.test(finalText)
+              ? 'bn-BD'
+              : /[\u0900-\u097F]/.test(finalText)
+              ? 'hi-IN'
+              : 'en-US'
+            : voiceLang;
+        const { speak } = await import('@/lib/voice');
+        speak(finalText, lang).catch(() => {});
+      }
+    } catch {}
 
     const userMsg = useChatStore
       .getState()
@@ -605,7 +692,18 @@ async function runGeneration(chatId: string) {
   } catch (err: any) {
     if (controller.signal.aborted) {
       const stoppedText = accumulatedTextBuffer;
-      await db.messages.update(assistantMsgId, { content: stoppedText });
+      if (thinkingStartTime && !thinkingEndTime) {
+        thinkingEndTime = Date.now();
+      }
+      const finalThinkingMs =
+        thinkingStartTime && thinkingEndTime
+          ? Math.max(100, thinkingEndTime - thinkingStartTime)
+          : undefined;
+      await db.messages.update(assistantMsgId, {
+        content: stoppedText,
+        thinking: accumulatedThinking || undefined,
+        thinkingMs: finalThinkingMs,
+      });
       useChatStore.setState((state) => ({
         ...(isCurrent()
           ? {
@@ -1087,6 +1185,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (activeAbortController) {
       activeAbortController.abort();
     }
+    try {
+      import('@/lib/voice').then((m) => m.stopSpeaking()).catch(() => {});
+      useUIStore.getState().setCurrentlySpeakingMsgId(null);
+    } catch {}
     if (currentAssistantId && accumulatedTextBuffer !== undefined) {
       const textToFlush = accumulatedTextBuffer;
       db.messages.update(currentAssistantId, { content: textToFlush }).catch(() => {});

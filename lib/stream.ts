@@ -1,5 +1,6 @@
 import { proxyFetch, ProviderId } from './providers';
 import { ToolDef, toOpenAITools, toAnthropicTools, toGeminiTools } from './tools';
+import { db } from './db';
 
 export type Part =
   | { kind: 'image'; mime: string; b64: string }
@@ -14,13 +15,21 @@ export type Msg = {
 
 export type ToolCall = { id: string; name: string; args: any; raw?: any };
 export type AMsg =
-  | { role: 'system' | 'user' | 'assistant'; content: string; parts?: Part[]; toolCalls?: ToolCall[] }
+  | {
+      role: 'system' | 'user' | 'assistant';
+      content: string;
+      parts?: Part[];
+      toolCalls?: ToolCall[];
+      thinkingBlocks?: any[];
+    }
   | { role: 'tool'; toolCallId: string; name: string; content: string };
 
 export type AgentEvent =
   | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
   | { type: 'tool_call'; call: ToolCall }
-  | { type: 'usage'; in: number; out: number };
+  | { type: 'usage'; in: number; out: number }
+  | { type: 'assistant_meta'; thinkingBlocks?: any[] };
 
 const fileText = (p: Extract<Part, { kind: 'text' }>) => `<file name="${p.name}">\n${p.text}\n</file>`;
 
@@ -146,15 +155,18 @@ function toAnthropicAll(msgs: AMsg[]) {
       continue;
     }
     flush();
-    if (m.role === 'assistant' && m.toolCalls?.length)
+    if (m.role === 'assistant' && m.toolCalls?.length) {
       out.push({
         role: 'assistant',
         content: [
+          ...(m.thinkingBlocks || []),
           ...(m.content ? [{ type: 'text', text: m.content }] : []),
           ...m.toolCalls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.args })),
         ],
       });
-    else out.push(toAnthropic(m as Msg));
+    } else {
+      out.push(toAnthropic(m as Msg));
+    }
   }
   flush();
   return out;
@@ -265,16 +277,20 @@ export async function* streamChat(o: {
   messages: AMsg[];
   tools?: ToolDef[];
   signal?: AbortSignal;
+  thinkingLevel?: 'off' | 'auto' | 'high';
 }): AsyncGenerator<AgentEvent> {
-  const { provider, baseUrl, apiKey, model, messages, tools = [], signal } = o;
+  const { provider, baseUrl, apiKey, model, messages, tools = [], signal, thinkingLevel = 'auto' } = o;
   const sys = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
   const chat = messages.filter((m) => m.role !== 'system');
   let path = '';
   let body: any;
+  let res: Response;
 
   if (provider === 'anthropic') {
     path = '/messages';
-    body = {
+    const isKnownRejector = /haiku/i.test(model) && !/3-5|3\.5/i.test(model);
+    const thinkingOff = isKnownRejector || (await db.meta.get(`thinkingOff:anthropic:${model}`))?.value === true;
+    const baseAnthropicBody = {
       model,
       max_tokens: 8192,
       stream: true,
@@ -282,13 +298,61 @@ export async function* streamChat(o: {
       messages: toAnthropicAll(chat),
       ...(tools.length > 0 ? { tools: toAnthropicTools(tools) } : {}),
     };
+
+    if (thinkingLevel !== 'off' && !thinkingOff) {
+      const adaptiveBody = {
+        ...baseAnthropicBody,
+        thinking: { type: 'adaptive' },
+      };
+      res = await proxyFetch({ provider, baseUrl, apiKey, path, body: adaptiveBody, signal, stream: true });
+      if (!res.ok) {
+        let errText = '';
+        try {
+          errText = await res.clone().text();
+        } catch {}
+        if (res.status === 400 && /thinking/i.test(errText)) {
+          // Retry ONCE with manual form
+          const budget = thinkingLevel === 'high' ? 8000 : 3000;
+          const manualBody = {
+            ...baseAnthropicBody,
+            max_tokens: Math.max(baseAnthropicBody.max_tokens, budget + 4000, 16000),
+            thinking: { type: 'enabled', budget_tokens: budget },
+          };
+          res = await proxyFetch({ provider, baseUrl, apiKey, path, body: manualBody, signal, stream: true });
+          if (!res.ok) {
+            let manualErrText = '';
+            try {
+              manualErrText = await res.clone().text();
+            } catch {}
+            if (res.status === 400 && /thinking/i.test(manualErrText)) {
+              await db.meta.put({ key: `thinkingOff:anthropic:${model}`, value: true });
+              res = await proxyFetch({ provider, baseUrl, apiKey, path, body: baseAnthropicBody, signal, stream: true });
+            }
+          }
+        }
+      }
+    } else {
+      res = await proxyFetch({ provider, baseUrl, apiKey, path, body: baseAnthropicBody, signal, stream: true });
+    }
   } else if (provider === 'gemini') {
     path = `/models/${model}:streamGenerateContent?alt=sse`;
+    const wantsThinking = thinkingLevel !== 'off';
+    const thinkingConfig = wantsThinking
+      ? {
+          includeThoughts: true,
+          ...(/gemini-3/i.test(model)
+            ? { thinkingLevel: thinkingLevel === 'high' ? 'high' : 'low' }
+            : { thinkingBudget: thinkingLevel === 'high' ? 8192 : -1 }),
+        }
+      : undefined;
+
     body = {
       systemInstruction: sys ? { parts: [{ text: sys }] } : undefined,
       contents: toGeminiAll(chat),
+      ...(thinkingConfig ? { generationConfig: { thinkingConfig } } : {}),
       ...(tools.length > 0 ? { tools: toGeminiTools(tools) } : {}),
     };
+    res = await proxyFetch({ provider, baseUrl, apiKey, path, body, signal, stream: true });
   } else {
     path = '/chat/completions';
     body = {
@@ -301,9 +365,9 @@ export async function* streamChat(o: {
       ...(provider === 'openai' || provider === 'openrouter' ? { stream_options: { include_usage: true } } : {}),
       ...(tools.length > 0 ? { tools: toOpenAITools(tools) } : {}),
     };
+    res = await proxyFetch({ provider, baseUrl, apiKey, path, body, signal, stream: true });
   }
 
-  const res = await proxyFetch({ provider, baseUrl, apiKey, path, body, signal, stream: true });
   if (!res.ok) {
     let t = '';
     try {
@@ -316,6 +380,9 @@ export async function* streamChat(o: {
 
   if (provider === 'anthropic') {
     let curTool: { id: string; name: string; args: string } | null = null;
+    let currentThinkingBlock: { type: 'thinking'; thinking: string; signature: string } | null = null;
+    const thinkBlocks: any[] = [];
+
     for await (const d of sse(res)) {
       let j: any;
       try {
@@ -332,16 +399,33 @@ export async function* streamChat(o: {
       } else if (j.type === 'message_delta') {
         yield { type: 'usage', in: anthropicInputTokens, out: j.usage?.output_tokens ?? 0 };
       } else if (j.type === 'content_block_start') {
-        if (j.content_block?.type === 'tool_use') {
+        if (j.content_block?.type === 'thinking') {
+          currentThinkingBlock = { type: 'thinking', thinking: '', signature: '' };
+        } else if (j.content_block?.type === 'redacted_thinking') {
+          thinkBlocks.push(j.content_block);
+        } else if (j.content_block?.type === 'tool_use') {
           curTool = { id: j.content_block.id, name: j.content_block.name, args: '' };
         }
       } else if (j.type === 'content_block_delta') {
-        if (j.delta?.type === 'text_delta' && j.delta.text) {
+        if (j.delta?.type === 'thinking_delta' && j.delta.thinking) {
+          if (currentThinkingBlock) {
+            currentThinkingBlock.thinking += j.delta.thinking;
+          }
+          yield { type: 'thinking', text: j.delta.thinking };
+        } else if (j.delta?.type === 'signature_delta' && j.delta.signature) {
+          if (currentThinkingBlock) {
+            currentThinkingBlock.signature = j.delta.signature;
+          }
+        } else if (j.delta?.type === 'text_delta' && j.delta.text) {
           yield { type: 'text', text: j.delta.text };
         } else if (j.delta?.type === 'input_json_delta' && curTool) {
           curTool.args += j.delta.partial_json;
         }
       } else if (j.type === 'content_block_stop') {
+        if (currentThinkingBlock) {
+          thinkBlocks.push(currentThinkingBlock);
+          currentThinkingBlock = null;
+        }
         if (curTool) {
           yield {
             type: 'tool_call',
@@ -354,6 +438,10 @@ export async function* streamChat(o: {
           curTool = null;
         }
       }
+    }
+
+    if (thinkBlocks.length > 0) {
+      yield { type: 'assistant_meta', thinkingBlocks: thinkBlocks };
     }
   } else if (provider === 'gemini') {
     for await (const d of sse(res)) {
@@ -386,7 +474,9 @@ export async function* streamChat(o: {
               raw: p,
             },
           };
-        } else if (p.text && !p.thought) {
+        } else if (p.thought && p.text) {
+          yield { type: 'thinking', text: p.text };
+        } else if (p.text) {
           yield { type: 'text', text: p.text };
         }
       }
@@ -411,14 +501,21 @@ export async function* streamChat(o: {
           out: j.usage.completion_tokens ?? 0,
         };
       }
-      for (const tc of j.choices?.[0]?.delta?.tool_calls ?? []) {
-        const a = (acc[tc.index ?? 0] ??= { id: '', name: '', args: '' });
-        if (tc.id) a.id = tc.id;
-        if (tc.function?.name) a.name += tc.function.name;
-        if (tc.function?.arguments) a.args += tc.function.arguments;
+      const delta = j.choices?.[0]?.delta;
+      if (delta) {
+        const reasoning = delta.reasoning_content || delta.reasoning;
+        if (reasoning) {
+          yield { type: 'thinking', text: reasoning };
+        }
+        for (const tc of delta.tool_calls ?? []) {
+          const a = (acc[tc.index ?? 0] ??= { id: '', name: '', args: '' });
+          if (tc.id) a.id = tc.id;
+          if (tc.function?.name) a.name += tc.function.name;
+          if (tc.function?.arguments) a.args += tc.function.arguments;
+        }
+        const t = delta.content;
+        if (t) yield { type: 'text', text: t };
       }
-      const t = j.choices?.[0]?.delta?.content;
-      if (t) yield { type: 'text', text: t };
     }
     for (const idxStr of Object.keys(acc)) {
       const a = acc[Number(idxStr)];

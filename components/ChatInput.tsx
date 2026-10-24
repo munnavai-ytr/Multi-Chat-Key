@@ -14,8 +14,10 @@ import {
   AlertCircle,
   Globe,
   AppWindow,
+  Mic,
+  MicOff,
 } from 'lucide-react';
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useChatStore } from '@/store/chat';
 import { useKeysStore } from '@/store/keys';
 import { useUIStore } from '@/store/ui';
@@ -29,6 +31,8 @@ import {
   ACCEPTED_EXTENSIONS,
 } from '@/lib/files';
 import { requestPersistence } from '@/lib/storage';
+import { startListening, stopSpeaking } from '@/lib/voice';
+import { db } from '@/lib/db';
 
 export function ChatInput() {
   const [value, setValue] = useState('');
@@ -37,10 +41,13 @@ export function ChatInput() {
   const [warning, setWarning] = useState<string | null>(null);
   const [compatDismissed, setCompatDismissed] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isListening, setIsListening] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const stopListeningFnRef = useRef<(() => Promise<void> | void) | null>(null);
+  const autoSendTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const {
     chats,
@@ -161,6 +168,94 @@ export function ChatInput() {
     sendMessage(textToSend, filesToSend);
     requestPersistence().catch(() => {});
   };
+
+  const stopListening = useCallback(async () => {
+    if (autoSendTimerRef.current) {
+      clearTimeout(autoSendTimerRef.current);
+      autoSendTimerRef.current = null;
+    }
+    if (stopListeningFnRef.current) {
+      await stopListeningFnRef.current();
+      stopListeningFnRef.current = null;
+    }
+    setIsListening(false);
+  }, []);
+
+  const toggleListening = async () => {
+    if (isListening) {
+      await stopListening();
+      return;
+    }
+
+    stopSpeaking();
+    useUIStore.getState().setCurrentlySpeakingMsgId(null);
+
+    const voiceLang = (await db.meta.get('voiceLang'))?.value || 'auto';
+    const autoSend = (await db.meta.get('voiceAutoSend'))?.value === true;
+    const lang = voiceLang === 'auto' ? 'en-US' : voiceLang;
+
+    const baseVal = value.trim() ? value.trim() + ' ' : '';
+
+    try {
+      setIsListening(true);
+      const cleanup = await startListening({
+        lang,
+        onPartial: (text) => {
+          setValue(baseVal + text);
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 150)}px`;
+          }
+          if (autoSend) {
+            if (autoSendTimerRef.current) clearTimeout(autoSendTimerRef.current);
+            autoSendTimerRef.current = setTimeout(() => {
+              stopListening();
+              const fullText = (baseVal + text).trim();
+              if (fullText) {
+                setValue('');
+                setAttachments([]);
+                resetTextareaHeight();
+                sendMessage(fullText, [...attachments]);
+                requestPersistence().catch(() => {});
+              }
+            }, 1200);
+          }
+        },
+        onFinal: (finalText) => {
+          const fullText = (baseVal + finalText).trim();
+          setValue(fullText);
+          setIsListening(false);
+          if (autoSend && fullText) {
+            if (autoSendTimerRef.current) clearTimeout(autoSendTimerRef.current);
+            setValue('');
+            setAttachments([]);
+            resetTextareaHeight();
+            sendMessage(fullText, [...attachments]);
+            requestPersistence().catch(() => {});
+          }
+        },
+        onError: (err) => {
+          setIsListening(false);
+          showWarning(err);
+        },
+      });
+      stopListeningFnRef.current = cleanup;
+    } catch (err: any) {
+      setIsListening(false);
+      showWarning(err?.message || 'Failed to start microphone');
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (stopListeningFnRef.current) {
+        stopListeningFnRef.current();
+      }
+      if (autoSendTimerRef.current) {
+        clearTimeout(autoSendTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!prevOnlineRef.current && isOnline && value.trim()) {
@@ -503,6 +598,22 @@ export function ChatInput() {
               }
               className="flex-1 max-h-[150px] min-h-[28px] resize-none bg-transparent py-1 px-1 text-sm sm:text-base text-text placeholder:text-muted focus:outline-none leading-relaxed"
             />
+
+            {/* Mic button */}
+            <button
+              type="button"
+              onClick={toggleListening}
+              disabled={streaming}
+              aria-label={isListening ? 'Stop listening' : 'Voice input'}
+              title={isListening ? 'Listening... (tap to stop)' : 'Voice input'}
+              className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 mb-0.5 transition-all cursor-pointer ${
+                isListening
+                  ? 'bg-rose-500 text-white animate-pulse ring-4 ring-rose-500/25 shadow-md'
+                  : 'text-muted hover:text-text hover:bg-surface2'
+              }`}
+            >
+              <Mic className={`w-4 h-4 ${isListening ? 'animate-bounce' : ''}`} />
+            </button>
 
             {streaming ? (
               // Stop button while streaming

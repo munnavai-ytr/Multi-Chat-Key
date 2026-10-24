@@ -30,9 +30,13 @@ import {
   ChevronRight,
   RefreshCw,
   Copy,
+  Volume2,
+  Mic,
+  Play,
 } from 'lucide-react';
 import { useUIStore } from '@/store/ui';
 import { useKeysStore } from '@/store/keys';
+import { speak, stopSpeaking } from '@/lib/voice';
 import { useChatStore } from '@/store/chat';
 import { ProviderId, detectProvider, listModels } from '@/lib/providers';
 import { encryptKey, decryptKey } from '@/lib/crypto';
@@ -193,6 +197,11 @@ export function SettingsModal() {
   const [toolCreateDocument, setToolCreateDocument] = useState(true);
   const [toolRunAsk, setToolRunAsk] = useState(true);
   const [wsApproval, setWsApproval] = useState<'ask' | 'auto'>('ask');
+  const [thinkingLevel, setThinkingLevel] = useState<'off' | 'auto' | 'high'>('auto');
+  const [voiceLang, setVoiceLang] = useState('auto');
+  const [voiceAutoRead, setVoiceAutoRead] = useState(false);
+  const [voiceAutoSend, setVoiceAutoSend] = useState(false);
+  const [isTestingVoice, setIsTestingVoice] = useState(false);
 
   const [profileText, setProfileText] = useState('');
   const [profileUpdatedAt, setProfileUpdatedAt] = useState<number | null>(null);
@@ -234,6 +243,14 @@ export function SettingsModal() {
       if (ask !== undefined) setToolRunAsk(Boolean(ask.value));
       const wsa = await db.meta.get('wsApproval');
       if (wsa !== undefined) setWsApproval(wsa.value === 'auto' ? 'auto' : 'ask');
+      const tl = await db.meta.get('thinkingLevel');
+      if (tl?.value) setThinkingLevel(tl.value as 'off' | 'auto' | 'high');
+      const vl = await db.meta.get('voiceLang');
+      if (vl?.value) setVoiceLang(String(vl.value));
+      const varRow = await db.meta.get('voiceAutoRead');
+      if (varRow !== undefined) setVoiceAutoRead(Boolean(varRow.value));
+      const vasRow = await db.meta.get('voiceAutoSend');
+      if (vasRow !== undefined) setVoiceAutoSend(Boolean(vasRow.value));
     } catch {}
   };
 
@@ -833,6 +850,18 @@ export function SettingsModal() {
           </button>
           <button
             type="button"
+            onClick={() => setSettingsTab('voice')}
+            className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
+              settingsTab === 'voice'
+                ? 'border-accent text-text'
+                : 'border-transparent text-muted hover:text-text'
+            }`}
+          >
+            <Volume2 className="w-3.5 h-3.5 text-accent" />
+            <span>Voice</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsTab('search')}
             className={`py-2.5 px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
               settingsTab === 'search'
@@ -1127,6 +1156,29 @@ export function SettingsModal() {
                     >
                       <option value="ask">Always ask</option>
                       <option value="auto">Auto-apply</option>
+                    </select>
+                  </div>
+
+                  {/* Thinking Level Selector */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface2/40 border border-border mt-3">
+                    <div className="space-y-0.5">
+                      <span className="text-xs font-semibold text-text">Thinking / Reasoning</span>
+                      <p className="text-[11px] text-muted">
+                        Visible thoughts for supported models (Claude 3.7+, Gemini 2.5+, DeepSeek/Groq)
+                      </p>
+                    </div>
+                    <select
+                      value={thinkingLevel}
+                      onChange={async (e) => {
+                        const val = e.target.value as 'off' | 'auto' | 'high';
+                        setThinkingLevel(val);
+                        await db.meta.put({ key: 'thinkingLevel', value: val });
+                      }}
+                      className="bg-surface border border-border text-xs rounded-lg px-2.5 py-1 text-text focus:outline-none focus:border-accent cursor-pointer shrink-0 ml-3"
+                    >
+                      <option value="auto">Auto (Adaptive)</option>
+                      <option value="high">High (Deep thought)</option>
+                      <option value="off">Off</option>
                     </select>
                   </div>
                 </div>
@@ -1982,6 +2034,114 @@ export function SettingsModal() {
               </div>
             );
           })}
+        </div>
+      ) : settingsTab === 'voice' ? (
+        <div className="space-y-4">
+          <div className="p-4 rounded-xl bg-surface2/60 border border-border space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold text-text flex items-center gap-2">
+                <Volume2 className="w-4 h-4 text-accent" />
+                <span>Voice Input & Output</span>
+              </h3>
+              <p className="text-xs text-muted mt-1 leading-relaxed">
+                Configure speech-to-text recognition, spoken language, and read-aloud options.
+              </p>
+            </div>
+
+            {/* Language Selector */}
+            <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface border border-border">
+              <div className="space-y-0.5">
+                <span className="text-xs font-semibold text-text">Speech Language</span>
+                <p className="text-[11px] text-muted">Language for voice transcription and audio synthesis</p>
+              </div>
+              <select
+                value={voiceLang}
+                onChange={async (e) => {
+                  const val = e.target.value;
+                  setVoiceLang(val);
+                  await db.meta.put({ key: 'voiceLang', value: val });
+                }}
+                className="bg-surface2 border border-border text-xs rounded-lg px-2.5 py-1.5 text-text focus:outline-none focus:border-accent cursor-pointer shrink-0 ml-3"
+              >
+                <option value="auto">Auto-detect (Default)</option>
+                <option value="en-US">English (en-US)</option>
+                <option value="bn-BD">Bengali (বাংলা, bn-BD)</option>
+                <option value="hi-IN">Hindi (हिन्दी, hi-IN)</option>
+              </select>
+            </div>
+
+            {/* Auto-read replies */}
+            <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface border border-border">
+              <div className="space-y-0.5 pr-2">
+                <span className="text-xs font-semibold text-text">Auto-read replies</span>
+                <p className="text-[11px] text-muted">Automatically speak AI responses when they finish generating</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={voiceAutoRead}
+                  onChange={async (e) => {
+                    const val = e.target.checked;
+                    setVoiceAutoRead(val);
+                    await db.meta.put({ key: 'voiceAutoRead', value: val });
+                  }}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+              </label>
+            </div>
+
+            {/* Auto-send voice messages */}
+            <div className="flex items-center justify-between p-3.5 rounded-xl bg-surface border border-border">
+              <div className="space-y-0.5 pr-2">
+                <span className="text-xs font-semibold text-text">Auto-send voice messages</span>
+                <p className="text-[11px] text-muted">Automatically send transcribed voice input after silence</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={voiceAutoSend}
+                  onChange={async (e) => {
+                    const val = e.target.checked;
+                    setVoiceAutoSend(val);
+                    await db.meta.put({ key: 'voiceAutoSend', value: val });
+                  }}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent" />
+              </label>
+            </div>
+
+            {/* Test Voice Button */}
+            <div className="pt-2 flex items-center justify-between">
+              <span className="text-xs text-muted">Test speech output on this device:</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  setIsTestingVoice(true);
+                  try {
+                    const sampleText =
+                      voiceLang === 'bn-BD'
+                        ? 'নমস্কার! চ্যাটলি ভয়েস সফলভাবে কাজ করছে।'
+                        : voiceLang === 'hi-IN'
+                        ? 'नमस्ते! चैटली वॉइस सफलतापूर्वक काम कर रहा है।'
+                        : 'Hello! Chatly voice output is functioning smoothly.';
+                    const lang = voiceLang === 'auto' ? 'en-US' : voiceLang;
+                    await speak(sampleText, lang);
+                  } catch (e) {
+                    console.error(e);
+                  } finally {
+                    setIsTestingVoice(false);
+                  }
+                }}
+                disabled={isTestingVoice}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface hover:bg-surface2 text-xs font-medium text-text border border-border transition-colors cursor-pointer"
+              >
+                <Play className="w-3.5 h-3.5 fill-current text-accent" />
+                <span>{isTestingVoice ? 'Speaking...' : 'Test Speech'}</span>
+              </button>
+            </div>
+          </div>
         </div>
       ) : settingsTab === 'advanced' ? (
         <div className="space-y-4">

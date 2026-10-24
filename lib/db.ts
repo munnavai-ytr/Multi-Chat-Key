@@ -55,6 +55,8 @@ export interface MsgRow {
   plan?: { title: string; status: 'todo' | 'doing' | 'done' }[];
   needsContinue?: boolean;
   documents?: { id: string; name: string; format: string; size: number }[];
+  thinking?: string;
+  thinkingMs?: number;
 }
 
 export interface DocRow {
