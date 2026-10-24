@@ -89,24 +89,45 @@ export async function runResearch(o: {
   const allHits: (SearchHit & { normUrl: string; domain: string })[] = [];
   const readUrlSet = new Set<string>();
 
-  // Acquire Screen Wake Lock & KeepAwake plugin
-  let wakeLock: any = null;
+let lock: any = null;
+async function keepAwake() {
   try {
-    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
-      wakeLock = await (navigator as any).wakeLock.request('screen');
-    }
+    lock = await (navigator as any).wakeLock?.request('screen');
+  } catch {
+    /* not supported */
+  }
+}
+function releaseAwake() {
+  try {
+    lock?.release();
   } catch {}
+  lock = null;
+}
 
-  let capacitorKeepAwakeActive = false;
-  try {
-    const { KeepAwake } = await import('@capacitor-community/keep-awake').catch(() => ({
-      KeepAwake: null,
-    }));
-    if (KeepAwake?.keepAwake) {
-      await KeepAwake.keepAwake();
-      capacitorKeepAwakeActive = true;
-    }
-  } catch {}
+export async function runResearch(o: {
+  question: string;
+  depth: 'quick' | 'standard' | 'deep';
+  llm: { provider: any; baseUrl?: string; apiKey: string; model: string };
+  searchKey: string;
+  onProgress: (p: Progress) => void;
+  signal: AbortSignal;
+}): Promise<{ dossier: string; sources: { id: number; title: string; url: string }[] }> {
+  const limits = LIMITS[o.depth] || LIMITS.standard;
+  let searchesCount = 0;
+  const keptSources: {
+    id: number;
+    title: string;
+    url: string;
+    note: string;
+    score: number;
+  }[] = [];
+
+  const seenUrls = new Set<string>();
+  const allHits: (SearchHit & { normUrl: string; domain: string })[] = [];
+  const readUrlSet = new Set<string>();
+
+  // Acquire Screen Wake Lock
+  await keepAwake();
 
   const checkAbort = () => {
     if (o.signal.aborted) {
@@ -405,19 +426,6 @@ List up to 3 important missing aspects as new search queries. Reply with ONLY a 
       })),
     };
   } finally {
-    // Release screen wake lock
-    if (wakeLock) {
-      try {
-        await wakeLock.release();
-      } catch {}
-    }
-    if (capacitorKeepAwakeActive) {
-      try {
-        const { KeepAwake } = await import('@capacitor-community/keep-awake').catch(() => ({
-          KeepAwake: null,
-        }));
-        if (KeepAwake?.allowSleep) await KeepAwake.allowSleep();
-      } catch {}
-    }
+    releaseAwake();
   }
 }
