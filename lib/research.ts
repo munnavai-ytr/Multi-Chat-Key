@@ -18,7 +18,6 @@ function normalizeUrl(rawUrl: string): string {
   try {
     const u = new URL(rawUrl);
     u.hash = '';
-    // Strip common tracking params
     const keysToDelete: string[] = [];
     u.searchParams.forEach((_, key) => {
       if (key.startsWith('utm_') || key === 'ref' || key === 'source' || key === 'fbclid') {
@@ -46,7 +45,6 @@ function getDomain(urlStr: string): string {
   }
 }
 
-// Helper to run tasks with concurrency limit
 async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -66,28 +64,6 @@ async function runWithConcurrency<T, R>(
   await Promise.all(workers);
   return results;
 }
-
-export async function runResearch(o: {
-  question: string;
-  depth: 'quick' | 'standard' | 'deep';
-  llm: { provider: any; baseUrl?: string; apiKey: string; model: string };
-  searchKey: string;
-  onProgress: (p: Progress) => void;
-  signal: AbortSignal;
-}): Promise<{ dossier: string; sources: { id: number; title: string; url: string }[] }> {
-  const limits = LIMITS[o.depth] || LIMITS.standard;
-  let searchesCount = 0;
-  const keptSources: {
-    id: number;
-    title: string;
-    url: string;
-    note: string;
-    score: number;
-  }[] = [];
-
-  const seenUrls = new Set<string>();
-  const allHits: (SearchHit & { normUrl: string; domain: string })[] = [];
-  const readUrlSet = new Set<string>();
 
 let lock: any = null;
 async function keepAwake() {
@@ -126,7 +102,6 @@ export async function runResearch(o: {
   const allHits: (SearchHit & { normUrl: string; domain: string })[] = [];
   const readUrlSet = new Set<string>();
 
-  // Acquire Screen Wake Lock
   await keepAwake();
 
   const checkAbort = () => {
@@ -139,7 +114,6 @@ export async function runResearch(o: {
     checkAbort();
     const today = new Date().toISOString().slice(0, 10);
 
-    // Step a) PLAN
     o.onProgress({
       phase: 'plan',
       text: 'Planning research strategy...',
@@ -176,11 +150,9 @@ export async function runResearch(o: {
       currentQueries = [o.question];
     }
 
-    // Outer rounds loop
     for (let round = 1; round <= limits.rounds; round++) {
       checkAbort();
 
-      // Step b) SEARCH for current queries (max 3 concurrent)
       o.onProgress({
         phase: 'search',
         text: `Searching ${searchesCount + 1}/${searchesCount + currentQueries.length} queries (Round ${round})...`,
@@ -188,11 +160,9 @@ export async function runResearch(o: {
         sources: keptSources.length,
       });
 
-      let completedInRound = 0;
       await runWithConcurrency(currentQueries, 3, async (query) => {
         checkAbort();
         searchesCount++;
-        completedInRound++;
         o.onProgress({
           phase: 'search',
           text: `Searching: "${query.slice(0, 35)}..." (${searchesCount} total)`,
@@ -222,8 +192,6 @@ export async function runResearch(o: {
 
       checkAbort();
 
-      // Step c) READ
-      // Filter hits not yet read, prioritize higher score, max 2 per domain
       const domainCount: Record<string, number> = {};
       const candidateHits = allHits
         .filter((h) => !readUrlSet.has(h.normUrl))
@@ -244,7 +212,6 @@ export async function runResearch(o: {
           sources: keptSources.length,
         });
 
-        // Batch extract up to 5 URLs at a time
         const extractedPagesMap = new Map<string, string>();
         const chunks: string[][] = [];
         for (let i = 0; i < candidateHits.length; i += 5) {
@@ -266,7 +233,6 @@ export async function runResearch(o: {
           }
         }
 
-        // Prepare page data for note-taking
         const pagesToNote = candidateHits.map((h) => {
           readUrlSet.add(h.normUrl);
           const raw = extractedPagesMap.get(h.normUrl) || h.content || '';
@@ -278,7 +244,6 @@ export async function runResearch(o: {
           };
         });
 
-        // Step d) NOTE (max 4 in parallel)
         o.onProgress({
           phase: 'note',
           text: `Analyzing ${pagesToNote.length} sources and extracting evidence...`,
@@ -286,10 +251,8 @@ export async function runResearch(o: {
           sources: keptSources.length,
         });
 
-        let notesProcessed = 0;
         await runWithConcurrency(pagesToNote, 4, async (page) => {
           checkAbort();
-          notesProcessed++;
           try {
             const notePrompt = `Question: "${o.question}"
 Extract only facts from this page that help answer the question. Keep specific numbers, dates, names and claims. Max 150 words. If nothing relevant reply exactly NONE.
@@ -333,7 +296,6 @@ ${page.text}`;
 
       checkAbort();
 
-      // Step e) GAPS (if rounds remain)
       if (round < limits.rounds && keptSources.length > 0) {
         o.onProgress({
           phase: 'gaps',
@@ -371,7 +333,6 @@ List up to 3 important missing aspects as new search queries. Reply with ONLY a 
                 .filter((x): x is string => typeof x === 'string' && Boolean(x.trim()))
                 .slice(0, 3);
             } else {
-              // No further gaps, finish rounds
               break;
             }
           } else {
@@ -387,13 +348,10 @@ List up to 3 important missing aspects as new search queries. Reply with ONLY a 
 
     checkAbort();
 
-    // Step f) Build dossier
-    // Hard cap 24,000 chars (drop lowest-scored notes first if needed)
     let sortedNotes = [...keptSources];
     let totalChars = sortedNotes.reduce((acc, s) => acc + s.note.length + s.title.length + 50, 0);
 
     if (totalChars > 24000) {
-      // Sort by score ascending so we drop lowest score
       sortedNotes.sort((a, b) => a.score - b.score);
       while (totalChars > 24000 && sortedNotes.length > 3) {
         const removed = sortedNotes.shift();
@@ -401,11 +359,9 @@ List up to 3 important missing aspects as new search queries. Reply with ONLY a 
           totalChars -= removed.note.length + removed.title.length + 50;
         }
       }
-      // Re-sort back by id
       sortedNotes.sort((a, b) => a.id - b.id);
     }
 
-    // Build the final dossier string
     const dossier = sortedNotes
       .map((s) => `[S${s.id}] ${s.title} - ${s.url}\n${s.note}`)
       .join('\n\n');
