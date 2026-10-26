@@ -1,0 +1,6 @@
+{
+  "name": "Chatly",
+  "description": "A mobile-first AI chat web app with clean, fast performance and zero layout jank.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
